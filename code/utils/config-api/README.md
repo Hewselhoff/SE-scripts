@@ -10,9 +10,9 @@ This API provides a simple interface for adding config file support to your scri
    - [Generating Default Configuration](#generating-default-configuration)  
    - [Parsing the Configuration](#parsing-the-configuration)  
    - [Retrieving Parsed Values](#retrieving-parsed-values)
-4. [Example Usage](#example-usage)
-5. [Error Handling](#error-handling)
-6. [Integration Tips](#integration-tips)
+4. [Error Handling](#error-handling)
+5. [Usage](#usage)  
+   - [Simple Example](#simple-example)
 
 ---
 
