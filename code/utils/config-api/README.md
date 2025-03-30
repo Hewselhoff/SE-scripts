@@ -156,7 +156,7 @@ To use the Caml API in your script, follow these steps:
 /* v Caml Config File API                                                   v */
 /* v ---------------------------------------------------------------------- v */
 
-<CAML API CODE GOES HERE>
+<CONFIG API CODE GOES HERE>
 
 /* ^ ---------------------------------------------------------------------- ^ */
 /* ^ Caml Config File API                                                   ^ */
