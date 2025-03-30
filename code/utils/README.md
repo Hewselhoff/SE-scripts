@@ -1,0 +1,2 @@
+# SE Script Utilities
+This directory contains various utilities for Space Engineers scripts. The utilities are general-purpose code that can be included in scripts to add useful functionality. The utilities are organized into subdirectories based on their purpose. Utilities should include their own README.md files to explain their usage and functionality.
