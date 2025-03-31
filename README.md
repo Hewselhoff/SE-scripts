@@ -14,6 +14,7 @@
     * *C# Dev Kit* - Official C# extensions
     * *NuGet Package Manager* - Add and remove .NET core packages
     * *.NET Install Tool* - Extension to install and manage .NET SDK versions
+    * *Space Engineers Helper Extension*
 
 ## Create a Script Project
 1. Open VScode
