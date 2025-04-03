@@ -126,70 +126,56 @@ We have to be careful here as there is a risk of running into "gimbal lock" if w
     - $\mathbf{u} = [u_x, u_y, u_z]^T$ be the up vector,
     - $\mathbf{f} = [f_x, f_y, f_z]^T$ be the forward vector,</br>
     then we can form the rotation matrix as:
-    ```math
+    $$
     R = \begin{bmatrix}
     r_x & u_x & f_x \\
     r_y & u_y & f_y \\
     r_z & u_z & f_z
-    \end{bmatrix}.
-    ```
+    \end{bmatrix}.$$
     > *Note:* Depending on our coordinate system and application (for instance, if our “forward” axis is actually defined as $-z$ rather than $+z$), we may need to adjust the ordering or sign conventions.
 
 2. **Convert the Rotation Matrix to a Quaternion**</br>>
     Once we have the rotation matrix $R$, we can convert it to a quaternion $q = (w, x, y, z)$. One standard algorithm is as follows:
     1. Compute the Trace of $R$:
-        ```math
-        \text{trace} = R_{11} + R_{22} + R_{33}.
-        ```
+        $$
+        \text{trace} = R_{11} + R_{22} + R_{33}.$$
     2. Based on the Value of the Trace, Compute the Quaternion Components:
         - **If $\text{trace} > 0$:**
-            ```math
-            S = \sqrt{\text{trace} + 1.0} \times 2 \quad (\text{which gives } 4w)
-            ```
-            ```math
-            w = 0.25\,S,\quad x = \frac{R_{32} - R_{23}}{S},\quad y = \frac{R_{13} - R_{31}}{S},\quad z = \frac{R_{21} - R_{12}}{S}.
-            ```
+            $$
+            S = \sqrt{\text{trace} + 1.0} \times 2 \quad (\text{which gives } 4w)$$
+            $$
+            w = 0.25\,S,\quad x = \frac{R_{32} - R_{23}}{S},\quad y = \frac{R_{13} - R_{31}}{S},\quad z = \frac{R_{21} - R_{12}}{S}.$$
         - **If $R_{11}$ is the largest diagonal element:**
-            ```math
-            S = \sqrt{1.0 + R_{11} - R_{22} - R_{33}} \times 2 \quad (\text{which gives } 4x)
-            ```
-            ```math
-            w = \frac{R_{32} - R_{23}}{S},\quad x = 0.25\,S,\quad y = \frac{R_{12} + R_{21}}{S},\quad z = \frac{R_{13} + R_{31}}{S}.
-            ```
+            $$
+            S = \sqrt{1.0 + R_{11} - R_{22} - R_{33}} \times 2 \quad (\text{which gives } 4x)$$
+            $$
+            w = \frac{R_{32} - R_{23}}{S},\quad x = 0.25\,S,\quad y = \frac{R_{12} + R_{21}}{S},\quad z = \frac{R_{13} + R_{31}}{S}.$$
         - **If $R_{22}$ is the largest diagonal element:**
-            ```math
-            S = \sqrt{1.0 + R_{22} - R_{11} - R_{33}} \times 2 \quad (\text{which gives } 4y)
-            ```
-            ```math
-            w = \frac{R_{13} - R_{31}}{S},\quad x = \frac{R_{12} + R_{21}}{S},\quad y = 0.25\,S,\quad z = \frac{R_{23} + R_{32}}{S}.
-            ```
+            $$
+            S = \sqrt{1.0 + R_{22} - R_{11} - R_{33}} \times 2 \quad (\text{which gives } 4y)$$
+            $$
+            w = \frac{R_{13} - R_{31}}{S},\quad x = \frac{R_{12} + R_{21}}{S},\quad y = 0.25\,S,\quad z = \frac{R_{23} + R_{32}}{S}.$$
         - **If $R_{33}$ is the largest diagonal element:**
-            ```math
-            S = \sqrt{1.0 + R_{33} - R_{11} - R_{22}} \times 2 \quad (\text{which gives } 4z)
-            ```
-            ```math
-            w = \frac{R_{21} - R_{12}}{S},\quad x = \frac{R_{13} + R_{31}}{S},\quad y = \frac{R_{23} + R_{32}}{S},\quad z = 0.25\,S.
-            ```
+            $$
+            S = \sqrt{1.0 + R_{33} - R_{11} - R_{22}} \times 2 \quad (\text{which gives } 4z)$$
+            $$
+            w = \frac{R_{21} - R_{12}}{S},\quad x = \frac{R_{13} + R_{31}}{S},\quad y = \frac{R_{23} + R_{32}}{S},\quad z = 0.25\,S.$$
         This algorithm ensures that the quaternion is computed in a stable way, even when the rotation is near singular configurations.
 
 3. **Convert the Quaternion to Euler Angles:**  
     Once we have the quaternion $q = (w, x, y, z)$, we can convert it to Euler angles (Pitch, Roll, Yaw) using the following:
 
     - **Roll ($\phi$, rotation about the x-axis):**  
-        ```math
-        \phi = \arctan2\left(2\,(w\,x + y\,z),\, 1 - 2\,(x^2 + y^2)\right)
-        ```
+        $$
+        \phi = \arctan2\left(2\,(w\,x + y\,z),\, 1 - 2\,(x^2 + y^2)\right)$$
         
     - **Pitch ($\theta$, rotation about the y-axis):**  
-        ```math
-        \theta = \arcsin\left(2\,(w\,y - z\,x)\right)
-        ```
+        $$
+        \theta = \arcsin\left(2\,(w\,y - z\,x)\right)$$
         
     - **Yaw ($\psi$, rotation about the z-axis):**  
-        ```math
-        \psi = \arctan2\left(2\,(w\,z + x\,y),\, 1 - 2\,(y^2 + z^2)\right)
-        ```
-        
+        $$
+        \psi = \arctan2\left(2\,(w\,z + x\,y),\, 1 - 2\,(y^2 + z^2)\right)$$        
     These formulas assume that the rotation order is roll (x-axis), then pitch (y-axis), then yaw (z-axis).
 
 We can implement this in C# as a small set of functions::
