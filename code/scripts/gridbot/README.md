@@ -1,0 +1,2 @@
+# GridBot Auto-orientation
+GridBot allows the orientation of a ship or drone to be fixed the the coordinate system of a reference grid. For example, it could be used to make a drone's orientation fixed to the grid orientation of a station. This can be very useful for drones that are used to mine remover material  to expand a station, or for welding blocks added to the reference grid.
