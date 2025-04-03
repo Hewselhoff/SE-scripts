@@ -26,7 +26,6 @@ The implementation is provided below.
 
 #### RefBody
 ```csharp
-This is a base class holding 
 public class RefBody {
     public IMyCubeGrid RefGrid;       // Reference to a "ship" as a single rigid body
     public Vector3I IndexOffset;      // Index of the block you're interested in
@@ -72,7 +71,6 @@ public class RefBody {
 
 #### StaticRefBody and DynamicRefBody
 ```csharp
-// Static Reference Body : Reference vectors remain the same for the life of the instance
 public class StaticRefBody : RefBody {
 
     // Constructors re-directed to base (why?, because C#, that's why)
@@ -96,7 +94,6 @@ public class StaticRefBody : RefBody {
 
 #### DynamicRefBody
 ```csharp
-// Dynamic Reference Body : Reference vectors are calculated when requested
 public class DynamicRefBody : RefBody {
     internal override void Initialize() {}
     
