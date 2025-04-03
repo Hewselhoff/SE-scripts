@@ -11,38 +11,20 @@ In order to constrain the drones orientation so that its reference frame is alwa
 
 This should be fairly straightforward to implement, but first wee need to figure out how (and if it's possible) to perform each of these steps within the constraints of the SE script api. We'll tackle each step one at a time.
 ### Step 1: Get the Reference Grid's Orientation
-The API provides the capability to retrieve a quaternion for a block that can be used to transform the local coordinate frame of the block to the world coordinate frame.  Therefore, we can easily get the orientation of the reference grid by getting the quaternion of a block on the grid and simply applying the quaterion to the unit vectors of the axes, e.g. [1, 0, 0] for the right axis and so on. First, however, we need to decide on a reliable way of choosing the block in the drone grid to use as its orientation reference. The most intuitive choice for this is the drone's `IMyRemoteControl` since this block's orientation is already used as the reference for local thrust directions, which we already intuitively perceive as the reference for orienting in flight.
+The API provides the capability to retrieve a quaternion for a block that can be used to transform the local coordinate frame of the block to the world coordinate frame.  Therefore, we can easily get the orientation of the reference grid by getting the quaternion of a block on the grid and simply applying the quaterion to the unit vectors of the axes, e.g. [1, 0, 0] for the right axis and so on. First, however, we need to decide on a reliable way of choosing the block in the reference grid to use as its orientation reference. The simplest choice for this would be to use a connector attached to the target grid. This will also serve as an easy way of identifying the target grid for automating the process of retrieving and storing the orientation info.
 
+### Step 2: Convert the Reference Grid's Orientation to World Coordinates
+Here, much of the work is done for us. I found a nice set of little utility classes in a thread from a post on the Steam SE forum. The classes provide methods for easily retrieving a block's orientation vectors in world coordinates. The implementation provides are three classes:
 
-# Useful Snippets and Utility Code
+1. `RefBody` - This is the base class for the other two classes. It holds the reference to the grid and the block, and provides a general method to get transformed local direction vectors in world coordinates using the quaternion of the block passed to the constructor.
+2. `StaticRefBody` - This class calculates the vectors once during initialization. This is useful for static grids like planetary or asteroid anchored bases. This is the class we will use for the reference grid.
+3. `DynamicRefBody` - This class calculates the vectors each time they're requested. This is useful for moving grids like ships. 
 
-## Set Pitch, Roll or Yaw of a Gyro
-```
-gyroscope.SetValueFloat("Pitch", 42);
-gyroscope.SetValueFloat("Roll", 3.14);
-gyroscope.SetValueFloat("Yaw", 2.71);
-```
+The implementation is provided below.
 
-## Get World Orientation of a Block
+> Thanks to the Steam user *"FragMuffin"* for these handy classes. The original thread can be found [here](https://steamcommunity.com/app/244850/discussions/0/618459405716679388/).
 
-
-
-
-# Functional Components
-## Get Grid Orientation
-### Step 1: Get attached connector:
-1. Find main docking connector on this grid.
-2. Check if connector is connected to another grid.
-    * If not, exit
-3.  
-
-
-# Useful Third-party Classes
-
-## Reference Body Classes
-These classes provide orientation vectors and position of a block in *world coordinates*.
-### RefBody
-This is the base class for the other two classes. It holds the reference to the grid and the block, and provides a general method to get transformed local direction vectors in world coordinates. 
+#### RefBody
 ```csharp
 This is a base class holding 
 public class RefBody {
@@ -88,8 +70,7 @@ public class RefBody {
 }
 ```
 
-### StaticRefBody and DynamicRefBody
-The StaticRefBody class calculates the vectors once during initialization. This is useful for static grids like planetary or asteroid anchored bases.
+#### StaticRefBody and DynamicRefBody
 ```csharp
 // Static Reference Body : Reference vectors remain the same for the life of the instance
 public class StaticRefBody : RefBody {
@@ -113,8 +94,7 @@ public class StaticRefBody : RefBody {
 }
 ```
 
-### DynamicRefBody
-This class calculates the vectors each time they're requested. This is useful for moving grids like ships.
+#### DynamicRefBody
 ```csharp
 // Dynamic Reference Body : Reference vectors are calculated when requested
 public class DynamicRefBody : RefBody {
@@ -134,5 +114,124 @@ public class DynamicRefBody : RefBody {
     public override Vector3D VectorDown      { get { return GetTransformedDirVector(new Vector3I( 0,-1, 0)); }}
     public override Vector3D VectorForward   { get { return GetTransformedDirVector(new Vector3I( 0, 0,-1)); }}
     public override Vector3D Position { get { return RefGrid.GridIntegerToWorld(IndexOffset); }}
+}
+```
+
+### Step 3: Compute the Euler Angles
+We have to be careful here as there is a risk of running into "gimbal lock" if we compute the Euler angles directly from the world space "forward, "up" and "right" vectors. Instead, we can convert our world space orientation vectors to a quaternion, and then convert the quaternion to Euler angles. Since the quaternion represents the rotation in 4D space, it avoids the "gimbal lock" problem often encountered when using Euler angles. We can use the following process to get our Euler angles (Pitch, Roll and Yaw) needed for driving our gyro:
+
+1. **Construct the Rotation Matrix**</br>
+    Assume our three vectors are already orthonormal. A common convention is to assign them as the columns of a 3×3 rotation matrix. For example, if we let:
+    - $ \mathbf{r} = [r_x, r_y, r_z]^T $ be the right vector,
+    - $ \mathbf{u} = [u_x, u_y, u_z]^T $ be the up vector,
+    - $ \mathbf{f} = [f_x, f_y, f_z]^T $ be the forward vector,</br>
+    then we can form the rotation matrix as:
+    ```math
+    R = \begin{bmatrix}
+    r_x & u_x & f_x \\
+    r_y & u_y & f_y \\
+    r_z & u_z & f_z
+    \end{bmatrix}.
+    ```
+    > *Note:* Depending on our coordinate system and application (for instance, if our “forward” axis is actually defined as $-z$ rather than $+z$), we may need to adjust the ordering or sign conventions.
+
+2. **Convert the Rotation Matrix to a Quaternion**</br>>
+    Once we have the rotation matrix $R$, we can convert it to a quaternion $q = (w, x, y, z)$. One standard algorithm is as follows:
+    1. Compute the Trace of $R$:
+        ```math
+        \text{trace} = R_{11} + R_{22} + R_{33}.
+        ```
+    2. Based on the Value of the Trace, Compute the Quaternion Components:
+        - **If $\text{trace} > 0$:**
+            ```math
+            S = \sqrt{\text{trace} + 1.0} \times 2 \quad (\text{which gives } 4w)
+            ```
+            ```math
+            w = 0.25\,S,\quad x = \frac{R_{32} - R_{23}}{S},\quad y = \frac{R_{13} - R_{31}}{S},\quad z = \frac{R_{21} - R_{12}}{S}.
+            ```
+        - **If $R_{11}$ is the largest diagonal element:**
+            ```math
+            S = \sqrt{1.0 + R_{11} - R_{22} - R_{33}} \times 2 \quad (\text{which gives } 4x)
+            ```
+            ```math
+            w = \frac{R_{32} - R_{23}}{S},\quad x = 0.25\,S,\quad y = \frac{R_{12} + R_{21}}{S},\quad z = \frac{R_{13} + R_{31}}{S}.
+            ```
+        - **If $R_{22}$ is the largest diagonal element:**
+            ```math
+            S = \sqrt{1.0 + R_{22} - R_{11} - R_{33}} \times 2 \quad (\text{which gives } 4y)
+            ```
+            ```math
+            w = \frac{R_{13} - R_{31}}{S},\quad x = \frac{R_{12} + R_{21}}{S},\quad y = 0.25\,S,\quad z = \frac{R_{23} + R_{32}}{S}.
+            ```
+        - **If $R_{33}$ is the largest diagonal element:**
+            ```math
+            S = \sqrt{1.0 + R_{33} - R_{11} - R_{22}} \times 2 \quad (\text{which gives } 4z)
+            ```
+            ```math
+            w = \frac{R_{21} - R_{12}}{S},\quad x = \frac{R_{13} + R_{31}}{S},\quad y = \frac{R_{23} + R_{32}}{S},\quad z = 0.25\,S.
+            ```
+        This algorithm ensures that the quaternion is computed in a stable way, even when the rotation is near singular configurations.
+
+3. **Convert the Quaternion to Euler Angles:**  
+    Once we have the quaternion $ q = (w, x, y, z) $, we can convert it to Euler angles (Pitch, Roll, Yaw) using the following:
+
+    - **Roll ($\phi$, rotation about the x-axis):**  
+        ```math
+        \phi = \arctan2\left(2\,(w\,x + y\,z),\, 1 - 2\,(x^2 + y^2)\right)
+        ```
+        
+    - **Pitch ($\theta$, rotation about the y-axis):**  
+        ```math
+        \theta = \arcsin\left(2\,(w\,y - z\,x)\right)
+        ```
+        
+    - **Yaw ($\psi$, rotation about the z-axis):**  
+        ```math
+        \psi = \arctan2\left(2\,(w\,z + x\,y),\, 1 - 2\,(y^2 + z^2)\right)
+        ```
+        
+    These formulas assume that the rotation order is roll (x-axis), then pitch (y-axis), then yaw (z-axis).
+
+We can implement this in C# as a small set of functions::
+```csharp
+public static Quaternion GetQuaternion(Vector3D right, Vector3D up, Vector3D forward) {
+    // Create the rotation matrix
+    MatrixD rotationMatrix = new MatrixD(
+        right.X, up.X, forward.X, 0,
+        right.Y, up.Y, forward.Y, 0,
+        right.Z, up.Z, forward.Z, 0,
+        0, 0, 0, 1
+    );
+
+    // Convert to quaternion
+    Quaternion quaternion;
+    Quaternion.CreateFromRotationMatrix(ref rotationMatrix, out quaternion);
+    return quaternion;
+}
+public static void QuaternionToEuler(Quaternion q, out double pitch, out double roll, out double yaw) {
+    // Convert quaternion to Euler angles
+    roll = Math.Atan2(2 * (q.W * q.X + q.Y * q.Z), 1 - 2 * (q.X * q.X + q.Y * q.Y));
+    pitch = Math.Asin(2 * (q.W * q.Y - q.Z * q.X));
+    yaw = Math.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z));
+}
+```
+```csharp
+// Example usage
+Vector3D right = refBody.VectorRight;
+Vector3D up = refBody.VectorUp;
+Vector3D forward = refBody.VectorForward;
+Quaternion quaternion = GetQuaternion(right, up, forward);
+QuaternionToEuler(quaternion, out double pitch, out double roll, out double yaw);
+```
+> *Note:* The above code assumes that the vectors are already orthonormal. This is safe since we're using the creating our rotation matrix from orientation vectors.
+
+### Step 4: Set the Gyro's Orientation
+Once we have the Euler angles, we can set the orientation of the gyroscope(s) on the drone. The SE API provides a method to set the orientation of a gyroscope using the `SetValueFloat` method. We can use this method to set the Pitch, Roll and Yaw properties of the gyroscope(s) to the computed values:
+```csharp
+// ...get the drones gyros as a list from terminal system, then...
+foreach (var gyro in gyros) {
+    gyro.SetValueFloat("Pitch", pitch);
+    gyro.SetValueFloat("Roll", roll);
+    gyro.SetValueFloat("Yaw", yaw);
 }
 ```
