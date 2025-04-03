@@ -122,9 +122,9 @@ We have to be careful here as there is a risk of running into "gimbal lock" if w
 
 1. **Construct the Rotation Matrix**</br>
     Assume our three vectors are already orthonormal. A common convention is to assign them as the columns of a 3×3 rotation matrix. For example, if we let:
-    - $ \mathbf{r} = [r_x, r_y, r_z]^T $ be the right vector,
-    - $ \mathbf{u} = [u_x, u_y, u_z]^T $ be the up vector,
-    - $ \mathbf{f} = [f_x, f_y, f_z]^T $ be the forward vector,</br>
+    - $\mathbf{r} = [r_x, r_y, r_z]^T$ be the right vector,
+    - $\mathbf{u} = [u_x, u_y, u_z]^T$ be the up vector,
+    - $\mathbf{f} = [f_x, f_y, f_z]^T$ be the forward vector,</br>
     then we can form the rotation matrix as:
     ```math
     R = \begin{bmatrix}
@@ -173,7 +173,7 @@ We have to be careful here as there is a risk of running into "gimbal lock" if w
         This algorithm ensures that the quaternion is computed in a stable way, even when the rotation is near singular configurations.
 
 3. **Convert the Quaternion to Euler Angles:**  
-    Once we have the quaternion $ q = (w, x, y, z) $, we can convert it to Euler angles (Pitch, Roll, Yaw) using the following:
+    Once we have the quaternion $q = (w, x, y, z)$, we can convert it to Euler angles (Pitch, Roll, Yaw) using the following:
 
     - **Roll ($\phi$, rotation about the x-axis):**  
         ```math
