@@ -69,7 +69,7 @@ public class RefBody {
 }
 ```
 
-#### StaticRefBody and DynamicRefBody
+#### StaticRefBody
 ```csharp
 public class StaticRefBody : RefBody {
 
