@@ -1,3 +1,6 @@
+/* v ---------------------------------------------------------------------- v */
+/* v Logging API                                                            v */
+/* v ---------------------------------------------------------------------- v */
 /// <summary>
 /// Logger class provides a simple logging interface with three log levels.
 /// It writes output to LCD panels tagged with "[LOG]" on the same grid,
@@ -131,3 +134,6 @@ public class Logger
         UpdateOutputs();
     }
 }
+/* ^ ---------------------------------------------------------------------- ^ */
+/* ^ Logging API                                                            ^ */
+/* ^ ---------------------------------------------------------------------- ^ */
