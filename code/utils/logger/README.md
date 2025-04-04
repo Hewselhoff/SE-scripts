@@ -1,0 +1,152 @@
+# A Simple Logging System Implementation
+
+## Overview
+
+The `Logger` class provides a simple, reusable logging system for Space Engineers programmable block scripts. It supports three log levels (Info, Warning, Error) and automatically writes log messages to LCD panels, the programmable block's output (`Echo`), and optionally to its `CustomData`. Each log entry is timestamped with the current UTC time.
+
+## Features
+
+- **Three Logging Levels:**  
+  - **Info:** General information.
+  - **Warning:** Cautionary messages.
+  - **Error:** Error messages.
+- **Timestamped Entries:** Each log message is prefixed with a UTC timestamp in the `HH:mm:ss` format.
+- **LCD Panel Integration:** Automatically detects and writes logs to any LCD panels (IMyTextPanel) on the same grid whose names contain `[LOG]`.
+- **Echo Fallback:** If no LCD panels are available, logs are output via `program.Echo` (if enabled).
+- **CustomData Logging:** Optionally writes log messages to the programmable block’s `CustomData` property.
+- **Message Limit:** Maintains only the 100 most recent messages by removing the oldest when the limit is reached.
+- **Clear Log Functionality:** Easily clear all stored log messages.
+
+## Getting Started
+
+### Installation
+
+1. **Copy the Code:**  
+   Copy the `Logger` class code into your Space Engineers programmable block script.
+
+2. **Instantiate the Logger:**  
+   In your `Program` class, create an instance of the `Logger` by passing the current `MyGridProgram` instance (i.e., `this`) to the constructor.
+
+3. **Configure Output Options:**  
+   Set the desired output options by modifying the `UseEchoFallback` and `LogToCustomData` properties.
+
+### Usage Example
+
+Below is a complete example demonstrating how to integrate and use the Logger class in a Space Engineers programmable block:
+
+```csharp
+public class Program : MyGridProgram
+{
+    // Instance of our Logger.
+    private Logger logger;
+
+    public Program()
+    {
+        // Instantiate the logger and enable all output options.
+        logger = new Logger(this)
+        {
+            UseEchoFallback = true,    // Use Echo if no LCD panels are available.
+            LogToCustomData = true     // Also log to CustomData.
+        };
+
+        // Log an initial message indicating that the script has started.
+        logger.Info("Script initialization complete.");
+    }
+
+    public void Main(string argument)
+    {
+        // Log one message for each log level.
+        logger.Info("This is an info message.");
+        logger.Warning("This is a warning message.");
+        logger.Error("This is an error message.");
+
+        // Optional: Clear the log if the argument "clear" is received.
+        if (argument.ToLower() == "clear")
+        {
+            logger.Clear();
+            logger.Info("Log cleared.");
+        }
+    }
+}
+```
+
+## API Reference
+
+### Constructor
+
+#### `Logger(MyGridProgram program)`
+- **Description:**  
+  Automatically locates all LCD panels on the same grid with `[LOG]` in their name.
+- **Parameters:**  
+  - `program`: The instance of `MyGridProgram` (usually `this`) representing the programmable block.
+
+### Methods
+
+#### `void Info(string message)`
+- **Description:**  
+  Logs an informational message.
+- **Usage Example:**
+  ```csharp
+  logger.Info("This is an info message.");
+  ```
+
+#### `void Warning(string message)`
+- **Description:**  
+  Logs a warning message.
+- **Usage Example:**
+  ```csharp
+  logger.Warning("This is a warning message.");
+  ```
+
+#### `void Error(string message)`
+- **Description:**  
+  Logs an error message.
+- **Usage Example:**
+  ```csharp
+  logger.Error("This is an error message.");
+  ```
+
+#### `string Timestamp()`
+- **Description:**  
+  Returns the current UTC time in `HH:mm:ss` format, prefixed with the letter "T".  
+  **Example:** `"T12:34:56"`
+- **Usage Example:**
+  ```csharp
+  string currentTimestamp = logger.Timestamp();
+  ```
+
+#### `void Clear()`
+- **Description:**  
+  Clears all stored log messages and updates all output displays (LCDs, Echo, and CustomData).
+- **Usage Example:**
+  ```csharp
+  logger.Clear();
+  ```
+
+## Configuration Options
+
+- **`UseEchoFallback`**  
+  - **Type:** `bool`
+  - **Description:**  
+    If set to `true`, the logger uses `program.Echo` to output logs when no LCD panels are detected.
+  - **Default:** `true`
+  
+- **`LogToCustomData`**  
+  - **Type:** `bool`
+  - **Description:**  
+    If set to `true`, the logger writes log messages to the programmable block’s `CustomData` property.
+  - **Default:** `false`
+
+## Additional Notes
+
+- **LCD Panel Detection:**  
+  The logger automatically finds all LCD panels with `[LOG]` in their custom name that are on the same grid as the programmable block.
+
+- **Message Capacity:**  
+  The logger maintains a maximum of 100 messages. If this limit is exceeded, the oldest messages are removed to make room for new ones.
+
+- **Timestamping:**  
+  Each log entry includes a timestamp, which is generated by the `Timestamp()` method. This helps in tracking when each event was logged.
+
+- **Customization:**  
+  The Logger class is designed to be lightweight. You can easily extend its functionality (for example, adding additional log levels or formatting options) without significant changes to the core structure.
