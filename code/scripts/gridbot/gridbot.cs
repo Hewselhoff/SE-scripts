@@ -30,7 +30,6 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
         public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
         public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
-        public const double PRECISION = 0.01; // Radians
 
         /* v ---------------------------------------------------------------------- v */
         /* v Caml Config File API                                                   v */
@@ -432,12 +431,28 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         // Returns the angle error in radians.
         public double PerformGridAutoOrientation(IMyTerminalBlock shipBlock, IMyTerminalBlock targetBlock, List<IMyGyro> gyros, double Kp = 1.0)
         {
-            // Use the ship grid's world matrix rather than the remote control's orientation.
+            // Use the ship grid's world matrix.
             MatrixD shipMatrix = Me.CubeGrid.WorldMatrix;
             MatrixD targetMatrix = targetBlock.CubeGrid.WorldMatrix;
             
+            // Retrieve inversion flags from the config.
+            int invX = ConfigFile.Get<int>("invert-x");
+            int invY = ConfigFile.Get<int>("invert-y");
+            int invZ = ConfigFile.Get<int>("invert-z");
+            
+            // Determine the multipliers for each axis.
+            double factorX = (invX == 1 ? -1.0 : 1.0);
+            double factorY = (invY == 1 ? -1.0 : 1.0);
+            double factorZ = (invZ == 1 ? -1.0 : 1.0);
+            
+            // Pre-invert the target's orientation by modifying its basis vectors.
+            MatrixD modTargetMatrix = targetMatrix;  // copy the original matrix
+            modTargetMatrix.Right = targetMatrix.Right * factorX;
+            modTargetMatrix.Up = targetMatrix.Up * factorY;
+            modTargetMatrix.Forward = targetMatrix.Forward * factorZ;
+            
             // Compute the relative rotation matrix (the error rotation from ship to target).
-            MatrixD relativeMatrix = targetMatrix * MatrixD.Transpose(shipMatrix);
+            MatrixD relativeMatrix = modTargetMatrix * MatrixD.Transpose(shipMatrix);
             
             // Convert the rotation matrix to a quaternion and then extract the axis–angle.
             QuaternionD rotationQuat = QuaternionD.CreateFromRotationMatrix(relativeMatrix);
@@ -445,12 +460,11 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             double rotationAngle;
             rotationQuat.GetAxisAngle(out rotationAxis, out rotationAngle);
             
-            
             // If not orienting, just return the angle error.
             if (!orienting) {
                 return rotationAngle;
             }
-
+            
             // Convert rotationAngle from radians to degrees for gyro override inputs.
             double overrideValue = Kp * rotationAngle * (180.0 / Math.PI);
             
@@ -461,7 +475,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 gyro.Orientation.GetMatrix(out gyroMatrix);
                 Vector3D localAxis = Vector3D.TransformNormal(rotationAxis, MatrixD.Transpose(gyroMatrix));
                 
-                // Note: You may need to adjust the sign convention for your particular gyro mounting.
+                // Set the gyro override values.
                 gyro.SetValueFloat("Pitch", (float)(localAxis.X * overrideValue));
                 gyro.SetValueFloat("Yaw",   (float)(-localAxis.Y * overrideValue));
                 gyro.SetValueFloat("Roll",  (float)(-localAxis.Z * overrideValue));
@@ -470,6 +484,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
             return rotationAngle;
         }
+
 
         public bool SetReferenceGrid(MyGridProgram program) {
             if (shipRefBlock == null) {
@@ -524,7 +539,11 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
 
         public Program() {
             // Register config parameters
-            ConfigFile.RegisterProperty("Kp", ConfigValueType.Float, 1.0f);
+            ConfigFile.RegisterProperty("Kp", ConfigValueType.Float, 0.5f);
+            ConfigFile.RegisterProperty("precision", ConfigValueType.Float, 0.01f);
+            ConfigFile.RegisterProperty("invert-x", ConfigValueType.Int, 0);
+            ConfigFile.RegisterProperty("invert-y", ConfigValueType.Int, 0);
+            ConfigFile.RegisterProperty("invert-z", ConfigValueType.Int, 0);
 
             // Initialize the program
             Runtime.UpdateFrequency = STOP_RATE;
@@ -552,7 +571,6 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             if (!running) {
                 // Write default config if custom data is empty.
                 ConfigFile.CheckAndWriteDefaults(Me, this);
-                // Re-parse in case of changes in Custom Data.
                 if (!ConfigFile.CheckAndReparse(Me, this)) {
                     Echo("Configuration parsing failed. Please fix the errors and run again.");
                     return;
@@ -567,10 +585,17 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             
             Echo("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
 
-            if (orienting && Math.Abs(errorAngle) <= PRECISION) {
+            if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("precision")) {
                 StopGridAutoOrientation();
-            } else if (!orienting && Math.Abs(errorAngle) > PRECISION) {
+            } else if (!orienting && Math.Abs(errorAngle) > ConfigFile.Get<float>("precision")) {
                 StartGridAutoOrientation();
+            } else {
+                // Re-parse in case of changes in Custom Data.
+                // we'll only do this in the slow update for performance reasons.
+                if (!ConfigFile.CheckAndReparse(Me, this)) {
+                    Echo("Configuration parsing failed. Please fix the errors and run again.");
+                    return;
+                }
             }
         }
 
