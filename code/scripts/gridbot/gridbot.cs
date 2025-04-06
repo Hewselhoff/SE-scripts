@@ -30,9 +30,11 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
         public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
         public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
+        // Create an instance of ArgParser.
+        ArgParser argParser = new ArgParser();
 
-        /* v ---------------------------------------------------------------------- v */
-        /* v Caml Config File API                                                   v */
+        /* v ---------------------------------------------------------------------- v */ 
+        /* v Caml Config File API                                                   v */ 
         /* v ---------------------------------------------------------------------- v */
         // The supported property types.
         public enum ConfigValueType
@@ -374,12 +376,279 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 return true;
             }
         }
-        /* ^ ---------------------------------------------------------------------- ^ */
-        /* ^ Caml Config File API                                                   ^ */
+        /* ^ ---------------------------------------------------------------------- ^ */ 
+        /* ^ Caml Config File API                                                   ^ */ 
         /* ^ ---------------------------------------------------------------------- ^ */
 
+        /* v ---------------------------------------------------------------------- v */ 
+        /* v ArgParser API                                                          v */ 
         /* v ---------------------------------------------------------------------- v */
-        /* v Grid Inspection Utilities                                              v */
+        // A general purpose argument parser for Space Engineers programmable blocks.
+        public class ArgParser
+        {
+            // Nested class representing a registered argument definition.
+            public class ArgDefinition
+            {
+                public string Name;      // The argument name (including the "--" prefix)
+                public System.Type ArgType;     // The expected type (int, float, string, bool)
+                public bool IsList;      // True if this argument should accept multiple values
+                public bool IsRequired;  // True if this argument must be provided
+
+                public ArgDefinition(string name, System.Type argType, bool isList = false, bool isRequired = false)
+                {
+                    // Ensure the name starts with "--"
+                    Name = name.StartsWith("--") ? name : "--" + name;
+                    ArgType = argType;
+                    IsList = isList;
+                    IsRequired = isRequired;
+                }
+            }
+
+            // Dictionary holding all registered argument definitions.
+            private System.Collections.Generic.Dictionary<string, ArgDefinition> registeredArgs = new System.Collections.Generic.Dictionary<string, ArgDefinition>();
+
+            // Dictionary holding the parsed arguments and their values.
+            // For single value arguments, the value is stored as object; for lists, it is a List<T>.
+            private System.Collections.Generic.Dictionary<string, object> parsedArgs = new System.Collections.Generic.Dictionary<string, object>();
+
+            // List of errors that occurred during parsing.
+            public System.Collections.Generic.List<string> Errors { get; private set; } = new System.Collections.Generic.List<string>();
+
+            // If true, the parser will only allow one argument per call.
+            public bool OnlyAllowSingleArg { get; set; } = false;
+
+            /// <summary>
+            /// Registers a new argument definition.
+            /// </summary>
+            /// <param name="name">The argument name (with or without "--" prefix)</param>
+            /// <param name="argType">The expected type (int, float, string, bool)</param>
+            /// <param name="isList">If true, the argument accepts multiple space-separated values</param>
+            /// <param name="isRequired">If true, the argument must be provided</param>
+            public void RegisterArg(string name, System.Type argType, bool isList = false, bool isRequired = false)
+            {
+                var argDef = new ArgDefinition(name, argType, isList, isRequired);
+                registeredArgs[argDef.Name] = argDef;
+            }
+
+            /// <summary>
+            /// Gets the dictionary of parsed arguments.
+            /// </summary>
+            public System.Collections.Generic.Dictionary<string, object> ParsedArgs { get { return parsedArgs; } }
+
+            /// <summary>
+            /// Provides an enumerable to iterate over parsed arguments.
+            /// </summary>
+            public System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<string, object>> GetParsedArgs()
+            {
+                return parsedArgs;
+            }
+
+            /// <summary>
+            /// Parses the input string (from the Main method) into arguments.
+            /// Returns true if parsing is successful (i.e. no errors); otherwise false.
+            /// </summary>
+            /// <param name="input">The argument string passed to Main</param>
+            public bool Parse(string input)
+            {
+                // Clear previous errors and parsed arguments.
+                Errors.Clear();
+                parsedArgs.Clear();
+
+                if (string.IsNullOrWhiteSpace(input))
+                    return true; // Nothing to parse
+
+                // Split the input by spaces.
+                // (Note: for more advanced parsing, you might need to handle quoted strings.)
+                var tokens = input.Split(new char[] { ' ' }, System.StringSplitOptions.RemoveEmptyEntries);
+                int countArgsParsed = 0;
+
+                // Loop through tokens.
+                for (int i = 0; i < tokens.Length; i++)
+                {
+                    string token = tokens[i];
+
+                    // Each argument should start with "--"
+                    if (!token.StartsWith("--"))
+                    {
+                        Errors.Add("Value provided without a preceding argument: " + token);
+                        continue;
+                    }
+
+                    // Check if the argument is registered.
+                    if (!registeredArgs.ContainsKey(token))
+                    {
+                        Errors.Add("Unrecognized argument: " + token);
+                        continue;
+                    }
+
+                    countArgsParsed++;
+                    if (OnlyAllowSingleArg && countArgsParsed > 1)
+                    {
+                        Errors.Add("Only one argument allowed per call.");
+                        return false;
+                    }
+
+                    ArgDefinition def = registeredArgs[token];
+                    System.Collections.Generic.List<string> values = new System.Collections.Generic.List<string>();
+
+                    // Gather all following tokens that are not another argument.
+                    int j = i + 1;
+                    while (j < tokens.Length && !tokens[j].StartsWith("--"))
+                    {
+                        values.Add(tokens[j]);
+                        j++;
+                    }
+                    i = j - 1; // Move index to the last token processed
+
+                    // For bool type, if no value is provided, assume true.
+                    if (def.ArgType == typeof(bool) && values.Count == 0)
+                    {
+                        parsedArgs[token] = true;
+                        continue;
+                    }
+
+                    // Process single value arguments.
+                    if (!def.IsList)
+                    {
+                        if (values.Count == 0)
+                        {
+                            Errors.Add("No value provided for argument: " + token);
+                            continue;
+                        }
+                        object converted = ConvertValue(values[0], def.ArgType);
+                        if (converted == null)
+                        {
+                            Errors.Add("Invalid value for argument " + token + ": " + values[0]);
+                            continue;
+                        }
+                        parsedArgs[token] = converted;
+                    }
+                    else // Process list arguments without using reflection.
+                    {
+                        if (values.Count == 0)
+                        {
+                            Errors.Add("No values provided for list argument: " + token);
+                            continue;
+                        }
+                        // Manually create lists for each supported type.
+                        if (def.ArgType == typeof(string))
+                        {
+                            System.Collections.Generic.List<string> list = new System.Collections.Generic.List<string>();
+                            foreach (var val in values)
+                            {
+                                list.Add(val);
+                            }
+                            parsedArgs[token] = list;
+                        }
+                        else if (def.ArgType == typeof(int))
+                        {
+                            System.Collections.Generic.List<int> list = new System.Collections.Generic.List<int>();
+                            foreach (var val in values)
+                            {
+                                int parsed;
+                                if (!int.TryParse(val, out parsed))
+                                {
+                                    Errors.Add("Invalid value for argument " + token + ": " + val);
+                                    continue;
+                                }
+                                list.Add(parsed);
+                            }
+                            parsedArgs[token] = list;
+                        }
+                        else if (def.ArgType == typeof(float))
+                        {
+                            System.Collections.Generic.List<float> list = new System.Collections.Generic.List<float>();
+                            foreach (var val in values)
+                            {
+                                float parsed;
+                                if (!float.TryParse(val, out parsed))
+                                {
+                                    Errors.Add("Invalid value for argument " + token + ": " + val);
+                                    continue;
+                                }
+                                list.Add(parsed);
+                            }
+                            parsedArgs[token] = list;
+                        }
+                        else if (def.ArgType == typeof(double))
+                        {
+                            System.Collections.Generic.List<double> list = new System.Collections.Generic.List<double>();
+                            foreach (var val in values)
+                            {
+                                double parsed;
+                                if (!double.TryParse(val, out parsed))
+                                {
+                                    Errors.Add("Invalid value for argument " + token + ": " + val);
+                                    continue;
+                                }
+                                list.Add(parsed);
+                            }
+                            parsedArgs[token] = list;
+                        }
+                        else if (def.ArgType == typeof(bool))
+                        {
+                            System.Collections.Generic.List<bool> list = new System.Collections.Generic.List<bool>();
+                            foreach (var val in values)
+                            {
+                                bool parsed;
+                                if (!bool.TryParse(val, out parsed))
+                                {
+                                    Errors.Add("Invalid value for argument " + token + ": " + val);
+                                    continue;
+                                }
+                                list.Add(parsed);
+                            }
+                            parsedArgs[token] = list;
+                        }
+                        else
+                        {
+                            Errors.Add("Unsupported list type for argument " + token);
+                        }
+                    }
+                }
+
+                // Check for missing required arguments.
+                foreach (var kvp in registeredArgs)
+                {
+                    if (kvp.Value.IsRequired && !parsedArgs.ContainsKey(kvp.Key))
+                        Errors.Add("Missing required argument: " + kvp.Key);
+                }
+
+                return Errors.Count == 0;
+            }
+
+            /// <summary>
+            /// Helper method that converts a string to the target type.
+            /// Returns null if conversion fails.
+            /// </summary>
+            private object ConvertValue(string value, System.Type targetType)
+            {
+                try
+                {
+                    if (targetType == typeof(string))
+                        return value;
+                    if (targetType == typeof(int))
+                        return int.Parse(value);
+                    if (targetType == typeof(float))
+                        return float.Parse(value);
+                    if (targetType == typeof(double))
+                        return double.Parse(value);
+                    if (targetType == typeof(bool))
+                        return bool.Parse(value);
+                }
+                catch
+                {
+                    return null;
+                }
+                return null;
+            }
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */ 
+        /* ^ ArgParser API                                                          ^ */ 
+        /* ^ ---------------------------------------------------------------------- ^ */
+
+        /* v ---------------------------------------------------------------------- v */ 
+        /* v Grid Inspection Utilities                                              v */ 
         /* v ---------------------------------------------------------------------- v */
         public static IMyShipConnector FindTargetRefBlock(MyGridProgram program) {
             // Get all connectors on the grid
@@ -396,7 +665,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     }
                 }
             }
-            program.Echo("No suitable ref connector found.");
+            program.Echo("Ship must be connected to a static grid.");
             return null;
         }
 
@@ -423,13 +692,31 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 program.Echo("Found " + gyros.Count + " gyros on the grid.");
             }
         }
-        /* ^ ---------------------------------------------------------------------- ^ */
-        /* ^ Grid Inspection Utilities                                              ^ */
+
+        public bool SetReferenceGrid(MyGridProgram program) {
+            IMyShipConnector temp = FindTargetRefBlock(this);
+            if (temp == null) {
+                program.Echo("No target reference block found.");
+                return false;
+            }
+            gridRefBlock = temp;
+            program.Echo("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
+            return true;
+        }
+
+        public bool IsInitialized() {
+            return (shipRefBlock != null && gridRefBlock != null && gyros != null && gyros.Count != 0);
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */ 
+        /* ^ Grid Inspection Utilities                                              ^ */ 
         /* ^ ---------------------------------------------------------------------- ^ */
 
+        /* v ---------------------------------------------------------------------- v */ 
+        /* v Auto Orientation                                                       v */ 
+        /* v ---------------------------------------------------------------------- v */
         // Alignment function that computes the rotation error and applies gyro overrides.
         // Returns the angle error in radians.
-        public double PerformGridAutoOrientation(IMyTerminalBlock shipBlock, IMyTerminalBlock targetBlock, List<IMyGyro> gyros, double Kp = 1.0)
+        public double ApplyOrientationUpdate(IMyTerminalBlock shipBlock, IMyTerminalBlock targetBlock, List<IMyGyro> gyros, double Kp = 1.0)
         {
             // Use the ship grid's world matrix.
             MatrixD shipMatrix = Me.CubeGrid.WorldMatrix;
@@ -446,7 +733,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             double factorZ = (invZ == 1 ? -1.0 : 1.0);
             
             // Pre-invert the target's orientation by modifying its basis vectors.
-            MatrixD modTargetMatrix = targetMatrix;  // copy the original matrix
+            MatrixD modTargetMatrix = targetMatrix;
             modTargetMatrix.Right = targetMatrix.Right * factorX;
             modTargetMatrix.Up = targetMatrix.Up * factorY;
             modTargetMatrix.Forward = targetMatrix.Forward * factorZ;
@@ -485,36 +772,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             return rotationAngle;
         }
 
-
-        public bool SetReferenceGrid(MyGridProgram program) {
-            if (shipRefBlock == null) {
-                program.Echo("No ship reference block found.");
-                return false;
-            }
-            gridRefBlock = FindTargetRefBlock(this);
-            if (gridRefBlock == null) {
-                program.Echo("No target reference block found.");
-                return false;
-            }
-            GetMyGyros(this, out gyros);
-            if (gyros == null || gyros.Count == 0) {
-                program.Echo("No gyros found.");
-                return false;
-            }
-            program.Echo("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
-            return true;
-        }
-
-        public bool IsInitialized() {
-            return (shipRefBlock != null && gridRefBlock != null && gyros != null && gyros.Count != 0);
-        }
-
         // Start active gyro overrides.
-        public void StartGridAutoOrientation() {
-            if (!IsInitialized()) {
-                Echo("Reference not initialized. Cannot start auto orientation.");
-                return;
-            }
+        public void StartActiveOrientation() {
             // Set update frequency if not already running the control loop.
             if (!orienting) {
                 Runtime.UpdateFrequency = SAMPLE_RATE;
@@ -524,7 +783,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         }
 
         // Stop active gyro overrides.
-        public void StopGridAutoOrientation() {
+        public void StopActiveOrientation() {
             foreach (var gyro in gyros) {
                 gyro.SetValueBool("Override", false);
                 gyro.SetValueFloat("Power", 0f);
@@ -537,13 +796,130 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             Echo("Orientation complete.");
         }
 
+        // Turn off Auto-orientation
+        public void StopGridAutoOrientation() {
+            if (!running) {
+                // if we're not running, just return.
+                return;
+            }
+            foreach (var gyro in gyros) {
+                gyro.SetValueBool("Override", false);
+                gyro.SetValueFloat("Pitch", 0f);
+                gyro.SetValueFloat("Yaw", 0f);
+                gyro.SetValueFloat("Roll", 0f);
+                gyro.SetValueFloat("Power", 1.0f);
+            }
+            Runtime.UpdateFrequency = STOP_RATE;
+            orienting = false;
+            running = false;
+            Echo("Auto-orientation OFF.");
+        }
+
+        // Turn on Auto-orientation
+        public void StartGridAutoOrientation() {
+            if (running) {
+                // If we're already running, just return.
+                return;
+            }
+            // Reparse the config file to ensure we have the latest values.
+            if (!ConfigFile.CheckAndReparse(Me, this)) {
+                Echo("Configuration parsing failed. Please fix the errors and run again.");
+                return;
+            }
+            Runtime.UpdateFrequency = CHECK_RATE;
+            orienting = false;
+            running = true;
+            // Enable gyro overrides for all gyros on the grid.
+            foreach (var gyro in gyros) {
+                gyro.SetValueBool("Override", true);
+                gyro.SetValueFloat("Power", 1.0f);
+            }            
+            Echo("Auto-orientation ON.");
+        }
+
+        // Perform the grid auto-orientation
+        public void PerformAutoOrientation() {
+            // if we're not running, just return.
+            if (!running) {
+                return;
+            }
+            // Call the alignment function to update gyro overrides.    
+            double errorAngle = ApplyOrientationUpdate(shipRefBlock, gridRefBlock, gyros, ConfigFile.Get<float>("Kp"));
+            
+            Echo("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
+
+            if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("tolerance")) {
+                StopActiveOrientation();
+            } else if (!orienting && Math.Abs(errorAngle) > ConfigFile.Get<float>("tolerance")) {
+                StartActiveOrientation();
+            } else {
+                // Re-parse in case of changes in Custom Data.
+                // we'll only do this in the slow update for performance reasons.
+                if (!ConfigFile.CheckAndReparse(Me, this)) {
+                    Echo("Configuration parsing failed. Please fix the errors and run again.");
+                    return;
+                }
+            }
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */ 
+        /* ^ Auto Orientation                                                       ^ */ 
+        /* ^ ---------------------------------------------------------------------- ^ */
+
+        /* v ---------------------------------------------------------------------- v */
+        /* v Command Handlers                                                       v */
+        /* v ---------------------------------------------------------------------- v */
+        public void Orient(bool val) {
+            if (!IsInitialized()) {
+                Echo("No reference grid set. Cannot start auto orientation.");
+                return;
+            }
+            if (val) {
+                StartGridAutoOrientation();
+            } else {            
+                StopGridAutoOrientation();
+            }
+            return;
+        }
+
+        public void Init(bool val) {
+            if (!val) {
+                return;
+            }
+            // stop the current orientation process if running
+            if (IsInitialized()) {
+                StopGridAutoOrientation();
+            }
+            StopGridAutoOrientation();
+            // Set reference grid
+            if (!SetReferenceGrid(this)) {
+                Echo("Failed to set reference grid.");
+                return;
+            }    
+            Echo("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */ 
+        /* ^ Command Handlers                                                       ^ */ 
+        /* ^ ---------------------------------------------------------------------- ^ */
+
         public Program() {
             // Register config parameters
             ConfigFile.RegisterProperty("Kp", ConfigValueType.Float, 0.5f);
-            ConfigFile.RegisterProperty("precision", ConfigValueType.Float, 0.01f);
+            ConfigFile.RegisterProperty("tolerance", ConfigValueType.Float, 0.01f);
             ConfigFile.RegisterProperty("invert-x", ConfigValueType.Int, 0);
             ConfigFile.RegisterProperty("invert-y", ConfigValueType.Int, 0);
             ConfigFile.RegisterProperty("invert-z", ConfigValueType.Int, 0);
+
+            // Register command line arguments
+            argParser.RegisterArg("orient", typeof(bool), false, false); // Turns auto-orientation on/off
+            argParser.RegisterArg("init", typeof(bool), false, false); // Updates the reference grid
+            argParser.OnlyAllowSingleArg = true;
+
+            // Write default config if custom data is empty, and parse values.
+            ConfigFile.CheckAndWriteDefaults(Me, this);
+            if (!ConfigFile.CheckAndReparse(Me, this)) {
+                Echo("Configuration parsing failed. Please fix the errors and run again.");
+                return;
+            }
 
             // Initialize the program
             Runtime.UpdateFrequency = STOP_RATE;
@@ -554,51 +930,48 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             if (shipRefBlock == null) {
                 return;
             }
+            GetMyGyros(this, out gyros);
+            if (gyros == null || gyros.Count == 0) {
+                Echo("No gyros found.");
+                return;
+            }
         }
 
         public void Main(string args) {
-            // If we're not initialized, try to initialize
-            if (!IsInitialized()) {
-                if (!SetReferenceGrid(this)) {
-                    Echo("Initialization failed. Exiting.");
-                    return;
+            // Parse the input argument string.
+            if (!argParser.Parse(args))
+            {
+                // Output errors if parsing fails.
+                foreach (string error in argParser.Errors)
+                {
+                    Echo("Error: " + error);
                 }
-                Echo("Initialization complete.");
-                return;
-            }
-            
-            // Set update frequency if not already running the control loop.
-            if (!running) {
-                // Write default config if custom data is empty.
-                ConfigFile.CheckAndWriteDefaults(Me, this);
-                if (!ConfigFile.CheckAndReparse(Me, this)) {
-                    Echo("Configuration parsing failed. Please fix the errors and run again.");
-                    return;
-                }
-                running = true;
-                Echo("Starting auto orientation.");
                 return;
             }
 
-            // Call the alignment function to update gyro overrides.    
-            double errorAngle = PerformGridAutoOrientation(shipRefBlock, gridRefBlock, gyros, ConfigFile.Get<float>("Kp"));
-            
-            Echo("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
-
-            if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("precision")) {
-                StopGridAutoOrientation();
-            } else if (!orienting && Math.Abs(errorAngle) > ConfigFile.Get<float>("precision")) {
-                StartGridAutoOrientation();
-            } else {
-                // Re-parse in case of changes in Custom Data.
-                // we'll only do this in the slow update for performance reasons.
-                if (!ConfigFile.CheckAndReparse(Me, this)) {
-                    Echo("Configuration parsing failed. Please fix the errors and run again.");
-                    return;
+            // Iterate over parsed arguments using the iterator and a switch statement.
+            foreach (var kvp in argParser.GetParsedArgs())
+            {
+                switch (kvp.Key)
+                {
+                    case "--orient":
+                        bool argval = (bool)kvp.Value;
+                        Orient(argval);
+                        break;
+                    case "--init":
+                        bool initval = (bool)kvp.Value;
+                        Init(initval);
+                        break;
+                    default:
+                        Echo("Unknown argument: " + kvp.Key);
+                        break;
                 }
             }
+
+            // Perform the auto-orientation if running.
+            PerformAutoOrientation();
+            
         }
-
 
 #region PreludeFooter
     }
