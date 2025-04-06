@@ -33,6 +33,146 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         // Create an instance of ArgParser.
         ArgParser argParser = new ArgParser();
 
+        /* v ---------------------------------------------------------------------- v */
+        /* v Logging API                                                            v */
+        /* v ---------------------------------------------------------------------- v */
+        /// <summary>
+        /// Logger class provides a simple logging interface with three log levels.
+        /// It writes output to LCD panels tagged with "[LOG]" on the same grid,
+        /// falls back to program.Echo if none are found (if enabled), and optionally logs
+        /// to the programmable block's CustomData (keeping only the 100 most recent messages).
+        /// </summary>
+        public class Logger
+        {
+            // Reference to the parent MyGridProgram.
+            private MyGridProgram program;
+            // List of LCD panels to which logs will be written.
+            private List<IMyTextPanel> lcdPanels;
+            // Internal log message storage.
+            private List<string> messages = new List<string>();
+            // Maximum number of messages to store.
+            private const int MaxMessages = 100;
+
+            // Configurable options.
+            public bool UseEchoFallback = true;
+            public bool LogToCustomData = false;
+
+            /// <summary>
+            /// Constructor – automatically finds LCD panels with "[LOG]" in their name on the same grid.
+            /// </summary>
+            public Logger(MyGridProgram program)
+            {
+                this.program = program;
+
+                // Find all IMyTextPanel blocks with "[LOG]" in the name.
+                lcdPanels = new List<IMyTextPanel>();
+                List<IMyTextPanel> allPanels = new List<IMyTextPanel>();
+                program.GridTerminalSystem.GetBlocksOfType<IMyTextPanel>(allPanels, panel => panel.CustomName.Contains("[LOG]"));
+
+                // Filter out panels not on the same grid as the programmable block.
+                foreach (var panel in allPanels)
+                {
+                    if (panel.CubeGrid == program.Me.CubeGrid)
+                    {
+                        lcdPanels.Add(panel);
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Appends a formatted log message and updates all outputs.
+            /// </summary>
+            /// <param name="formattedMessage">Message string (including log level prefix).</param>
+            private void AppendMessage(string formattedMessage)
+            {
+                messages.Add(formattedMessage);
+                // Ensure we only keep up to MaxMessages.
+                if (messages.Count > MaxMessages)
+                {
+                    messages.RemoveAt(0);
+                }
+                UpdateOutputs();
+            }
+
+            /// <summary>
+            /// Updates all configured outputs (LCDs, Echo, CustomData) with the current log.
+            /// </summary>
+            private void UpdateOutputs()
+            {
+                // Combine all messages into a single text block.
+                string logText = string.Join("\n", messages);
+
+                // Write the log text to each LCD panel (if any are available).
+                if (lcdPanels.Count > 0)
+                {
+                    foreach (var lcd in lcdPanels)
+                    {
+                        lcd.WriteText(logText, false);
+                        // Ensure the LCD is set to display the public text.
+                        lcd.ContentType = ContentType.TEXT_AND_IMAGE;
+                    }
+                }
+                // If no LCDs are available and fallback is enabled, use program.Echo.
+                else if (UseEchoFallback)
+                {
+                    program.Echo(logText);
+                }
+
+                // Optionally write the log to the programmable block's CustomData.
+                if (LogToCustomData)
+                {
+                    program.Me.CustomData = logText;
+                }
+            }
+
+            /// <summary>
+            /// Returns string with current UTC time in HH:mm:ss format, prepended by a capital "T".
+            /// </summary>
+            /// <returns>Formatted timestamp string.</returns>
+            /// <remarks>Example: "T12:34:56"</remarks>
+            public string Timestamp()
+            {
+                DateTime now = System.DateTime.UtcNow;
+                return "T" + now.ToString("HH:mm:ss");        
+            }
+
+            /// <summary>
+            /// Logs an informational message.
+            /// </summary>
+            public void Info(string message)
+            {
+                AppendMessage("[INFO " + Timestamp() + "]:" + message);
+            }
+
+            /// <summary>
+            /// Logs a warning message.
+            /// </summary>
+            public void Warning(string message)
+            {
+                AppendMessage("[WARNING " + Timestamp() + "]:" + message);
+            }
+
+            /// <summary>
+            /// Logs an error message.
+            /// </summary>
+            public void Error(string message)
+            {
+                AppendMessage("[ERROR " + Timestamp() + "]:" + message);
+            }
+
+            /// <summary>
+            /// Clears all log messages.
+            /// </summary>
+            public void Clear()
+            {
+                messages.Clear();
+                UpdateOutputs();
+            }
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */
+        /* ^ Logging API                                                            ^ */
+        /* ^ ---------------------------------------------------------------------- ^ */
+
         /* v ---------------------------------------------------------------------- v */ 
         /* v Caml Config File API                                                   v */ 
         /* v ---------------------------------------------------------------------- v */
@@ -335,7 +475,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 {
                     string defaultConfig = GenerateDefaultConfigText();
                     pb.CustomData = defaultConfig;
-                    program.Echo("No configuration data found. Default config added to Custom Data.");
+                    logger.Info("No configuration data found. Default config added to Custom Data.");
                 }
             }
 
@@ -360,7 +500,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                         // Print errors to the console.
                         foreach (var error in errors)
                         {
-                            program.Echo(error);
+                            logger.Error(error);
                         }
                         return false;
                     }
@@ -660,12 +800,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 if (connector.CubeGrid == program.Me.CubeGrid && connector.Status == MyShipConnectorStatus.Connected) {
                     var otherConnector = connector.OtherConnector;
                     if (otherConnector != null && otherConnector.CubeGrid.IsStatic) {
-                        program.Echo("Found ref connector: " + connector.CustomName);
+                        logger.Info("Found ref connector: " + connector.CustomName);
                         return otherConnector;
                     }
                 }
             }
-            program.Echo("Ship must be connected to a static grid.");
+            logger.Error("Ship must be connected to a static grid.");
             return null;
         }
 
@@ -675,10 +815,10 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             program.GridTerminalSystem.GetBlocksOfType(remotes);
             var shipRefBlock = remotes.FirstOrDefault(r => r.CubeGrid == program.Me.CubeGrid);
             if (shipRefBlock == null) {
-                program.Echo("No ship reference block found.");
+                logger.Error("No ship reference block found.");
                 return null;
             }
-            program.Echo("Found ship reference block: " + shipRefBlock.CustomName);
+            logger.Info("Found ship reference block: " + shipRefBlock.CustomName);
             return shipRefBlock;
         }
 
@@ -687,20 +827,20 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             program.GridTerminalSystem.GetBlocksOfType(allGyros);
             gyros = allGyros.Where(g => g.CubeGrid == program.Me.CubeGrid).ToList();
             if (gyros.Count == 0) {
-                program.Echo("No gyros found on the grid.");
+                logger.Error("No gyros found on the grid.");
             } else {
-                program.Echo("Found " + gyros.Count + " gyros on the grid.");
+                logger.Info("Found " + gyros.Count + " gyros on the grid.");
             }
         }
 
         public bool SetReferenceGrid(MyGridProgram program) {
             IMyShipConnector temp = FindTargetRefBlock(this);
             if (temp == null) {
-                program.Echo("No target reference block found.");
+                logger.Error("No target reference block found.");
                 return false;
             }
             gridRefBlock = temp;
-            program.Echo("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
+            logger.Info("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
             return true;
         }
 
@@ -778,7 +918,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             if (!orienting) {
                 Runtime.UpdateFrequency = SAMPLE_RATE;
                 orienting = true;
-                Echo("Reorienting to " + gridRefBlock.CubeGrid.CustomName + ".");
+                logger.Info("Reorienting to " + gridRefBlock.CubeGrid.CustomName + ".");
             }
         }
 
@@ -793,7 +933,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
             Runtime.UpdateFrequency = CHECK_RATE;
             orienting = false;
-            Echo("Orientation complete.");
+            logger.Info("Orientation complete.");
         }
 
         // Turn off Auto-orientation
@@ -812,7 +952,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             Runtime.UpdateFrequency = STOP_RATE;
             orienting = false;
             running = false;
-            Echo("Auto-orientation OFF.");
+            logger.Info("Auto-orientation OFF.");
         }
 
         // Turn on Auto-orientation
@@ -823,7 +963,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
             // Reparse the config file to ensure we have the latest values.
             if (!ConfigFile.CheckAndReparse(Me, this)) {
-                Echo("Configuration parsing failed. Please fix the errors and run again.");
+                logger.Error("Configuration parsing failed. Please fix the errors and run again.");
                 return;
             }
             Runtime.UpdateFrequency = CHECK_RATE;
@@ -834,7 +974,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 gyro.SetValueBool("Override", true);
                 gyro.SetValueFloat("Power", 1.0f);
             }            
-            Echo("Auto-orientation ON.");
+            logger.Info("Auto-orientation ON.");
         }
 
         // Perform the grid auto-orientation
@@ -846,7 +986,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Call the alignment function to update gyro overrides.    
             double errorAngle = ApplyOrientationUpdate(shipRefBlock, gridRefBlock, gyros, ConfigFile.Get<float>("Kp"));
             
-            Echo("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
+            logger.Error("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
 
             if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("tolerance")) {
                 StopActiveOrientation();
@@ -856,7 +996,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 // Re-parse in case of changes in Custom Data.
                 // we'll only do this in the slow update for performance reasons.
                 if (!ConfigFile.CheckAndReparse(Me, this)) {
-                    Echo("Configuration parsing failed. Please fix the errors and run again.");
+                    logger.Error("Configuration parsing failed. Please fix the errors and run again.");
                     return;
                 }
             }
@@ -870,7 +1010,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         /* v ---------------------------------------------------------------------- v */
         public void Orient(bool val) {
             if (!IsInitialized()) {
-                Echo("No reference grid set. Cannot start auto orientation.");
+                logger.Error("No reference grid set. Cannot start auto orientation.");
                 return;
             }
             if (val) {
@@ -892,16 +1032,24 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             StopGridAutoOrientation();
             // Set reference grid
             if (!SetReferenceGrid(this)) {
-                Echo("Failed to set reference grid.");
+                logger.Error("Failed to set reference grid.");
                 return;
             }    
-            Echo("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
         }
         /* ^ ---------------------------------------------------------------------- ^ */ 
         /* ^ Command Handlers                                                       ^ */ 
         /* ^ ---------------------------------------------------------------------- ^ */
+        // Create an instance of Logger.
+        public static Logger logger;
 
         public Program() {
+            // Initialize the logger, enabling all output types.
+            logger = new Logger(this)
+            {
+                UseEchoFallback = true,    // Fallback to program.Echo if no LCDs are available.
+                LogToCustomData = false    // Disable logging to CustomData.
+            };
+
             // Register config parameters
             ConfigFile.RegisterProperty("Kp", ConfigValueType.Float, 0.5f);
             ConfigFile.RegisterProperty("tolerance", ConfigValueType.Float, 0.01f);
@@ -917,7 +1065,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Write default config if custom data is empty, and parse values.
             ConfigFile.CheckAndWriteDefaults(Me, this);
             if (!ConfigFile.CheckAndReparse(Me, this)) {
-                Echo("Configuration parsing failed. Please fix the errors and run again.");
+                logger.Error("Configuration parsing failed. Please fix the errors and run again.");
                 return;
             }
 
@@ -932,7 +1080,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
             GetMyGyros(this, out gyros);
             if (gyros == null || gyros.Count == 0) {
-                Echo("No gyros found.");
+                logger.Error("No gyros found.");
                 return;
             }
         }
@@ -944,7 +1092,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 // Output errors if parsing fails.
                 foreach (string error in argParser.Errors)
                 {
-                    Echo("Error: " + error);
+                    logger.Error("Error: " + error);
                 }
                 return;
             }
@@ -963,7 +1111,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                         Init(initval);
                         break;
                     default:
-                        Echo("Unknown argument: " + kvp.Key);
+                        logger.Error("Unknown argument: " + kvp.Key);
                         break;
                 }
             }
