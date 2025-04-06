@@ -72,9 +72,9 @@ public class Logger
         {
             foreach (var lcd in lcdPanels)
             {
-                lcd.WritePublicText(logText, false);
+                lcd.WriteText(logText, false);
                 // Ensure the LCD is set to display the public text.
-                lcd.ShowPublicTextOnScreen();
+                lcd.ContentType = ContentType.TEXT_AND_IMAGE;
             }
         }
         // If no LCDs are available and fallback is enabled, use program.Echo.
@@ -106,7 +106,7 @@ public class Logger
     /// </summary>
     public void Info(string message)
     {
-        AppendMessage("[INFO " + Timestamp() "]:" + message);
+        AppendMessage("[INFO " + Timestamp() + "]:" + message);
     }
 
     /// <summary>
@@ -114,7 +114,7 @@ public class Logger
     /// </summary>
     public void Warning(string message)
     {
-        AppendMessage("[WARNING " + Timestamp() "]:" + message);
+        AppendMessage("[WARNING " + Timestamp() + "]:" + message);
     }
 
     /// <summary>
@@ -122,7 +122,7 @@ public class Logger
     /// </summary>
     public void Error(string message)
     {
-        AppendMessage("[ERROR " + Timestamp() "]:" + message);
+        AppendMessage("[ERROR " + Timestamp() + "]:" + message);
     }
 
     /// <summary>

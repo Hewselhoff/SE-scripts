@@ -97,9 +97,9 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
                 {
                     foreach (var lcd in lcdPanels)
                     {
-                        lcd.WritePublicText(logText, false);
+                        lcd.WriteText(logText, false);
                         // Ensure the LCD is set to display the public text.
-                        lcd.ShowPublicTextOnScreen();
+                        lcd.ContentType = ContentType.TEXT_AND_IMAGE;
                     }
                 }
                 // If no LCDs are available and fallback is enabled, use program.Echo.
@@ -131,7 +131,7 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// </summary>
             public void Info(string message)
             {
-                AppendMessage("[INFO " + Timestamp() "]:" + message);
+                AppendMessage("[INFO " + Timestamp() + "]:" + message);
             }
 
             /// <summary>
@@ -139,7 +139,7 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// </summary>
             public void Warning(string message)
             {
-                AppendMessage("[WARNING " + Timestamp() "]:" + message);
+                AppendMessage("[WARNING " + Timestamp() + "]:" + message);
             }
 
             /// <summary>
@@ -147,7 +147,7 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// </summary>
             public void Error(string message)
             {
-                AppendMessage("[ERROR " + Timestamp() "]:" + message);
+                AppendMessage("[ERROR " + Timestamp() + "]:" + message);
             }
 
             /// <summary>

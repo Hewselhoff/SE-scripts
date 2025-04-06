@@ -20,200 +20,585 @@ using VRage.Game.ObjectBuilders.Definitions;
 // Change this namespace for each script you create.
 namespace SpaceEngineers.UWBlockPrograms.GridBot {
     public sealed class Program : MyGridProgram {
-    // Your code goes between the next #endregion and #region
 #endregion
 
+        public IMyShipConnector gridRefBlock;
+        public IMyRemoteControl shipRefBlock;
+        public List<IMyGyro> gyros;
+        public bool running, orienting;
+        // Set a global update frequency (sample rate)
+        public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
+        public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
+        public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
+
         /* v ---------------------------------------------------------------------- v */
-        /* v RefBody Classes                                                        v */
+        /* v Caml Config File API                                                   v */
         /* v ---------------------------------------------------------------------- v */
-        public class RefBody {
-            public IMyCubeGrid RefGrid;
-            public Vector3I IndexOffset;
-            public Quaternion OrientOffset;
-            internal Vector3D i_VectorRight, i_VectorLeft, i_VectorUp, i_VectorDown, i_VectorBackward, i_VectorForward, i_Position;
-            public virtual Vector3D VectorRight     { get {return i_VectorRight;   } internal set {i_VectorRight    = value;}}
-            public virtual Vector3D VectorLeft      { get {return i_VectorLeft;    } internal set {i_VectorLeft     = value;}}
-            public virtual Vector3D VectorUp        { get {return i_VectorUp;      } internal set {i_VectorUp       = value;}}
-            public virtual Vector3D VectorDown      { get {return i_VectorDown;    } internal set {i_VectorDown     = value;}}
-            public virtual Vector3D VectorBackward  { get {return i_VectorBackward;} internal set {i_VectorBackward = value;}}
-            public virtual Vector3D VectorForward   { get {return i_VectorForward; } internal set {i_VectorForward  = value;}}
-            public virtual Vector3D Position        { get {return i_Position;      } internal set {i_Position       = value;}}
-            public RefBody(IMyCubeGrid refGrid, Vector3I indexOffset, Quaternion orientOffset) {
-                RefGrid = refGrid;
-                IndexOffset = indexOffset;
-                OrientOffset = orientOffset;
-                Initialize();
-            }
-            public RefBody(IMyCubeGrid refGrid) : this(refGrid, Vector3I.Zero, Quaternion.Identity) {}
-            public RefBody(IMyCubeGrid refGrid, Vector3I indexOffset) : this(refGrid, indexOffset, Quaternion.Identity) {}
-            public RefBody(IMyCubeBlock block) {
-                RefGrid = block.CubeGrid;
-                IndexOffset = block.Position;
-                block.Orientation.GetQuaternion(out OrientOffset);
-                Initialize();
-            }
-            public RefBody(IMyTerminalBlock block) : this(block as IMyCubeBlock) {}
-            internal Vector3D GetTransformedDirVector(Vector3I dirIndexVect) {
-                Vector3D fromPoint = RefGrid.GridIntegerToWorld(IndexOffset);
-                Vector3D toPoint   = RefGrid.GridIntegerToWorld(IndexOffset - Vector3I.Transform(dirIndexVect, OrientOffset));
-                return fromPoint - toPoint;
-            }
-            // Abstract Functions
-            internal virtual void Initialize() {}
+        // The supported property types.
+        public enum ConfigValueType
+        {
+            Int,
+            Float,
+            String,
+            ListInt,
+            ListFloat,
+            ListString
         }
 
-        public class StaticRefBody : RefBody {
+        // A definition for one config property.
+        public class ConfigProperty
+        {
+            public string Name;
+            public ConfigValueType ValueType;
+            public object DefaultValue;
+            public object Value; // Will be filled after parsing
+        }
 
-            // Constructors re-directed to base (why?, because C#, that's why)
-            public StaticRefBody(IMyCubeGrid refGrid, Vector3I indexOffset, Quaternion orientOffset) : base(refGrid, indexOffset, orientOffset) {} 
-            public StaticRefBody(IMyCubeGrid refGrid, Vector3I indexOffset) : base(refGrid, indexOffset) {} 
-            public StaticRefBody(IMyCubeBlock block) : base(block) {} 
-            public StaticRefBody(IMyTerminalBlock block) : base(block) {} 
-            internal override void Initialize() {
-                // Set Static Vectors (once on instanciation)
-                i_VectorRight     = GetTransformedDirVector(new Vector3I( 1, 0, 0)); // Vector3I.Right
-                i_VectorUp        = GetTransformedDirVector(new Vector3I( 0, 1, 0)); // Vector3I.Up
-                i_VectorBackward  = GetTransformedDirVector(new Vector3I( 0, 0, 1)); // Vector3I.Backward
-                i_VectorLeft      = -i_VectorRight;
-                i_VectorDown      = -i_VectorUp;
-                i_VectorForward   = -i_VectorBackward;
-                i_Position = RefGrid.GridIntegerToWorld(IndexOffset);
+        // The reusable config file parser.
+        public static class ConfigFile
+        {
+            // The schema is a mapping from property names to their definitions.
+            private static Dictionary<string, ConfigProperty> schema = new Dictionary<string, ConfigProperty>();
+            private static string configText = null; // Holds the raw config text
+
+            /// <summary>
+            /// Registers a new configuration property.
+            /// </summary>
+            /// <param name="name">Name/key of the property.</param>
+            /// <param name="type">Expected type.</param>
+            /// <param name="defaultValue">Default value if not provided.</param>
+            public static void RegisterProperty(string name, ConfigValueType type, object defaultValue)
+            {
+                if (schema.ContainsKey(name))
+                    throw new Exception("Property already registered: " + name);
+
+                schema[name] = new ConfigProperty
+                {
+                    Name = name,
+                    ValueType = type,
+                    DefaultValue = defaultValue,
+                    Value = null
+                };
+            }
+
+            /// <summary>
+            /// Generates a YAML‐like text for all registered properties using their default values.
+            /// </summary>
+            public static string GenerateDefaultConfigText()
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (var kvp in schema)
+                {
+                    string valueStr = ValueToString(kvp.Value.DefaultValue, kvp.Value.ValueType);
+                    sb.AppendLine($"{kvp.Key}: {valueStr}");
+                }
+                return sb.ToString();
+            }
+
+            // Converts a value to a string representation.
+            private static string ValueToString(object value, ConfigValueType type)
+            {
+                switch (type)
+                {
+                    case ConfigValueType.Int:
+                    case ConfigValueType.Float:
+                    case ConfigValueType.String:
+                        return value.ToString();
+                    case ConfigValueType.ListInt:
+                        var listInt = value as List<int>;
+                        return $"[{string.Join(", ", listInt)}]";
+                    case ConfigValueType.ListFloat:
+                        var listFloat = value as List<float>;
+                        return $"[{string.Join(", ", listFloat)}]";
+                    case ConfigValueType.ListString:
+                        var listStr = value as List<string>;
+                        return $"[{string.Join(", ", listStr)}]";
+                    default:
+                        return "";
+                }
+            }
+
+            /// <summary>
+            /// Parses a YAML-like configuration string.
+            /// Returns true if no errors were found; otherwise, errors are collected in the out parameter.
+            /// </summary>
+            /// <param name="configText">The configuration text to parse.</param>
+            /// <param name="errors">List to collect any parsing errors.</param>
+            /// <returns>True if parsing was successful, false otherwise.</returns>
+            public static bool ParseConfig(string configText, out List<string> errors)
+            {
+                errors = new List<string>();
+
+                // Store the raw config text for later use.
+                ConfigFile.configText = configText;
+                // Split the input into lines (ignoring empty lines)
+                var lines = configText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                // To check for duplicate keys.
+                HashSet<string> encountered = new HashSet<string>();
+
+                foreach (var line in lines)
+                {
+                    string trimmed = line.Trim();
+                    // Skip blank lines or comments (lines starting with '#')
+                    if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("#"))
+                        continue;
+
+                    // Expect a colon separator.
+                    int colonIndex = trimmed.IndexOf(':');
+                    if (colonIndex < 0)
+                    {
+                        errors.Add($"Syntax error: Missing ':' in line: {line}");
+                        continue;
+                    }
+
+                    string key = trimmed.Substring(0, colonIndex).Trim();
+                    string valuePart = trimmed.Substring(colonIndex + 1).Trim();
+
+                    // Check for duplicate property definitions.
+                    if (encountered.Contains(key))
+                    {
+                        errors.Add($"Duplicate property: {key}");
+                        continue;
+                    }
+                    encountered.Add(key);
+
+                    // Unknown property?
+                    if (!schema.ContainsKey(key))
+                    {
+                        errors.Add($"Unknown property: {key}");
+                        continue;
+                    }
+
+                    var prop = schema[key];
+                    object parsedValue = null;
+                    bool parseSuccess = false;
+
+                    // Parse according to the expected type.
+                    switch (prop.ValueType)
+                    {
+                        case ConfigValueType.Int:
+                            {
+                                int intResult;
+                                parseSuccess = int.TryParse(valuePart, out intResult);
+                                parsedValue = intResult;
+                            }
+                            break;
+                        case ConfigValueType.Float:
+                            {
+                                float floatResult;
+                                parseSuccess = float.TryParse(valuePart, out floatResult);
+                                parsedValue = floatResult;
+                            }
+                            break;
+                        case ConfigValueType.String:
+                            {
+                                // For strings, we simply take the trimmed value.
+                                parsedValue = valuePart;
+                                parseSuccess = true;
+                            }
+                            break;
+                        case ConfigValueType.ListInt:
+                            {
+                                if (valuePart.StartsWith("[") && valuePart.EndsWith("]"))
+                                {
+                                    string inner = valuePart.Substring(1, valuePart.Length - 2);
+                                    var items = inner.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                                    List<int> list = new List<int>();
+                                    parseSuccess = true;
+                                    foreach (var item in items)
+                                    {
+                                        int itemInt;
+                                        if (int.TryParse(item.Trim(), out itemInt))
+                                        {
+                                            list.Add(itemInt);
+                                        }
+                                        else
+                                        {
+                                            errors.Add($"Invalid integer in list for property '{key}': {item}");
+                                            parseSuccess = false;
+                                            break;
+                                        }
+                                    }
+                                    parsedValue = list;
+                                }
+                                else
+                                {
+                                    errors.Add($"Invalid list syntax for property '{key}'. Expected format: [item1, item2, ...]");
+                                }
+                            }
+                            break;
+                        case ConfigValueType.ListFloat:
+                            {
+                                if (valuePart.StartsWith("[") && valuePart.EndsWith("]"))
+                                {
+                                    string inner = valuePart.Substring(1, valuePart.Length - 2);
+                                    var items = inner.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                                    List<float> list = new List<float>();
+                                    parseSuccess = true;
+                                    foreach (var item in items)
+                                    {
+                                        float itemFloat;
+                                        if (float.TryParse(item.Trim(), out itemFloat))
+                                        {
+                                            list.Add(itemFloat);
+                                        }
+                                        else
+                                        {
+                                            errors.Add($"Invalid float in list for property '{key}': {item}");
+                                            parseSuccess = false;
+                                            break;
+                                        }
+                                    }
+                                    parsedValue = list;
+                                }
+                                else
+                                {
+                                    errors.Add($"Invalid list syntax for property '{key}'. Expected format: [item1, item2, ...]");
+                                }
+                            }
+                            break;
+                        case ConfigValueType.ListString:
+                            {
+                                if (valuePart.StartsWith("[") && valuePart.EndsWith("]"))
+                                {
+                                    string inner = valuePart.Substring(1, valuePart.Length - 2);
+                                    var items = inner.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                                    List<string> list = new List<string>();
+                                    parseSuccess = true;
+                                    foreach (var item in items)
+                                    {
+                                        // Simply trim the item (you might add unquoting logic if needed)
+                                        list.Add(item.Trim());
+                                    }
+                                    parsedValue = list;
+                                }
+                                else
+                                {
+                                    errors.Add($"Invalid list syntax for property '{key}'. Expected format: [item1, item2, ...]");
+                                }
+                            }
+                            break;
+                        default:
+                            errors.Add($"Unsupported type for property '{key}'");
+                            break;
+                    }
+
+                    if (!parseSuccess)
+                    {
+                        errors.Add($"Failed to parse value for property '{key}': {valuePart}");
+                    }
+                    else
+                    {
+                        // Store the successfully parsed value.
+                        prop.Value = parsedValue;
+                    }
+                }
+
+                // Check for any missing properties in the config.
+                foreach (var kvp in schema)
+                {
+                    if (!encountered.Contains(kvp.Key))
+                    {
+                        errors.Add($"Missing property: {kvp.Key}");
+                        // Optionally, you can assign the default if missing:
+                        kvp.Value.Value = kvp.Value.DefaultValue;
+                    }
+                }
+
+                return errors.Count == 0;
+            }
+
+            /// <summary>
+            /// Retrieves the parsed configuration value for the given property.
+            /// </summary>
+            /// <typeparam name="T">The expected type of the property.</typeparam>
+            /// <param name="propertyName">The name of the property.</param>
+            /// <returns>The value of the property.</returns>
+            public static T Get<T>(string propertyName)
+            {
+                if (!schema.ContainsKey(propertyName))
+                    throw new Exception("Property not registered: " + propertyName);
+                return (T)schema[propertyName].Value;
+            }
+
+            /// <summary>
+            /// Check if custom data is empty and write defaults if needed.
+            /// </summary>
+            /// <param name="pb">The programmable block instance.</param>
+            /// <param name="program">The instance of MyGridProgram to call Echo.</param>
+            /// <returns>True if defaults were written, false otherwise.</returns>
+            public static void CheckAndWriteDefaults(IMyProgrammableBlock pb, MyGridProgram program)
+            {
+                if (string.IsNullOrWhiteSpace(pb.CustomData))
+                {
+                    string defaultConfig = GenerateDefaultConfigText();
+                    pb.CustomData = defaultConfig;
+                    program.Echo("No configuration data found. Default config added to Custom Data.");
+                }
+            }
+
+            /// <summary>
+            /// Check if custom data changed and re-parse if needed.
+            /// </summary>
+            /// <param name="pb">The programmable block instance.</param>
+            /// <param name="program">The instance of MyGridProgram to call Echo.</param>
+            /// <returns>True if re-parsing was successful, false otherwise.</returns>
+            public static bool CheckAndReparse(IMyProgrammableBlock pb, MyGridProgram program)
+            {
+                // Check if the custom data has changed since the last parse.
+                if (string.IsNullOrWhiteSpace(pb.CustomData))
+                    return false; // No data to parse.
+
+                // If the custom data is different from the last parsed config text, re-parse it.
+                if (configText == null || pb.CustomData != configText)
+                {
+                    List<string> errors;
+                    if (!ParseConfig(pb.CustomData, out errors))
+                    {
+                        // Print errors to the console.
+                        foreach (var error in errors)
+                        {
+                            program.Echo(error);
+                        }
+                        return false;
+                    }
+                }
+                else if (configText != null && pb.CustomData == configText)
+                {
+                    // No changes detected, no need to re-parse.
+                    return true;
+                }
+
+                // Update the stored config text for future comparisons.
+                configText = pb.CustomData;
+                return true;
             }
         }
         /* ^ ---------------------------------------------------------------------- ^ */
-        /* ^ RefBody Classes                                                        ^ */
-        /* ^ ---------------------------------------------------------------------- ^ */
-
-        /* v ---------------------------------------------------------------------- v */
-        /* v Transformations                                                        v */
-        /* v ---------------------------------------------------------------------- v */
-        public static void GetEulerAngles(StaticRefBody refBody, out double pitch, out double roll, out double yaw) {
-            // Get the right, up and forward vectors from the reference grid
-            Vector3D right = refBody.Right;
-            Vector3D up = refBody.Up;
-            Vector3D forward = refBody.Forward;
-
-            // Create the rotation matrix
-            MatrixD rotationMatrix = new MatrixD(
-                right.X, up.X, forward.X, 0,
-                right.Y, up.Y, forward.Y, 0,
-                right.Z, up.Z, forward.Z, 0,
-                0, 0, 0, 1
-            );
-
-            // Convert to quaternion
-            Quaternion quaternion;
-            Quaternion.CreateFromRotationMatrix(ref rotationMatrix, out quaternion);
-
-            // Convert quaternion to Euler angles
-            roll = Math.Atan2(2 * (q.W * q.X + q.Y * q.Z), 1 - 2 * (q.X * q.X + q.Y * q.Y));
-            pitch = Math.Asin(2 * (q.W * q.Y - q.Z * q.X));
-            yaw = Math.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z));
-
-            return;
-        }
-        /* ^ ---------------------------------------------------------------------- ^ */
-        /* ^ Transformations                                                        ^ */
+        /* ^ Caml Config File API                                                   ^ */
         /* ^ ---------------------------------------------------------------------- ^ */
 
         /* v ---------------------------------------------------------------------- v */
         /* v Grid Inspection Utilities                                              v */
         /* v ---------------------------------------------------------------------- v */
-        public static IMyCubeGrid FindReferenceGrid(MyGridProgram program) {
+        public static IMyShipConnector FindTargetRefBlock(MyGridProgram program) {
             // Get all connectors on the grid
             List<IMyShipConnector> connectors = new List<IMyShipConnector>();
             program.GridTerminalSystem.GetBlocksOfType(connectors);
 
             // Loop through the connectors to find one that is locked to a static grid
             foreach (var connector in connectors) {
-                if (connector.Status == MyShipConnectorStatus.Locked) {
+                if (connector.CubeGrid == program.Me.CubeGrid && connector.Status == MyShipConnectorStatus.Connected) {
                     var otherConnector = connector.OtherConnector;
                     if (otherConnector != null && otherConnector.CubeGrid.IsStatic) {
-                        return otherConnector.CubeGrid;
+                        program.Echo("Found ref connector: " + connector.CustomName);
+                        return otherConnector;
                     }
                 }
             }
-
-            // If no suitable connector was found, return null
+            program.Echo("No suitable ref connector found.");
             return null;
         }
 
-        public static void SetReferenceGrid(MyGridProgram program, out StaticRefBody refBody) {
-            // Get the reference grid
-            IMyCubeGrid referenceGrid = FindReferenceGrid(program);
-            if (referenceGrid == null) {
-                return; // No reference grid found
+        // Find ship ref block (remote control)
+        public static IMyRemoteControl FindShipRefBlock(MyGridProgram program) {
+            List<IMyRemoteControl> remotes = new List<IMyRemoteControl>();
+            program.GridTerminalSystem.GetBlocksOfType(remotes);
+            var shipRefBlock = remotes.FirstOrDefault(r => r.CubeGrid == program.Me.CubeGrid);
+            if (shipRefBlock == null) {
+                program.Echo("No ship reference block found.");
+                return null;
             }
-            // Get the reference grid's orientation in world coordinates
-            refBody = new StaticRefBody(referenceGrid);
-            return;
+            program.Echo("Found ship reference block: " + shipRefBlock.CustomName);
+            return shipRefBlock;
         }
 
         public static void GetMyGyros(MyGridProgram program, out List<IMyGyro> gyros) {
-            // Get all gyros on the grid
             List<IMyGyro> allGyros = new List<IMyGyro>();
             program.GridTerminalSystem.GetBlocksOfType(allGyros);
-
-            // Filter the gyros to only include those that are on my grid
             gyros = allGyros.Where(g => g.CubeGrid == program.Me.CubeGrid).ToList();
             if (gyros.Count == 0) {
-                return;
+                program.Echo("No gyros found on the grid.");
+            } else {
+                program.Echo("Found " + gyros.Count + " gyros on the grid.");
             }
-            return;
         }
         /* ^ ---------------------------------------------------------------------- ^ */
         /* ^ Grid Inspection Utilities                                              ^ */
         /* ^ ---------------------------------------------------------------------- ^ */
 
-        /* v ---------------------------------------------------------------------- v */
-        /* v Autopilot Utilities                                                    v */
-        /* v ---------------------------------------------------------------------- v */
-        public void OrientGyrosToGrid(List<IMyGyro> gyros, double pitch, double roll, double yaw) {
-            // Loop through each gyro and set its orientation
-            foreach (var gyro in gyros) {
-                gyro.SetValueFloat("Pitch", pitch);
-                gyro.SetValueFloat("Roll", roll);
-                gyro.SetValueFloat("Yaw", yaw);
+        // Alignment function that computes the rotation error and applies gyro overrides.
+        // Returns the angle error in radians.
+        public double PerformGridAutoOrientation(IMyTerminalBlock shipBlock, IMyTerminalBlock targetBlock, List<IMyGyro> gyros, double Kp = 1.0)
+        {
+            // Use the ship grid's world matrix.
+            MatrixD shipMatrix = Me.CubeGrid.WorldMatrix;
+            MatrixD targetMatrix = targetBlock.CubeGrid.WorldMatrix;
+            
+            // Retrieve inversion flags from the config.
+            int invX = ConfigFile.Get<int>("invert-x");
+            int invY = ConfigFile.Get<int>("invert-y");
+            int invZ = ConfigFile.Get<int>("invert-z");
+            
+            // Determine the multipliers for each axis.
+            double factorX = (invX == 1 ? -1.0 : 1.0);
+            double factorY = (invY == 1 ? -1.0 : 1.0);
+            double factorZ = (invZ == 1 ? -1.0 : 1.0);
+            
+            // Pre-invert the target's orientation by modifying its basis vectors.
+            MatrixD modTargetMatrix = targetMatrix;  // copy the original matrix
+            modTargetMatrix.Right = targetMatrix.Right * factorX;
+            modTargetMatrix.Up = targetMatrix.Up * factorY;
+            modTargetMatrix.Forward = targetMatrix.Forward * factorZ;
+            
+            // Compute the relative rotation matrix (the error rotation from ship to target).
+            MatrixD relativeMatrix = modTargetMatrix * MatrixD.Transpose(shipMatrix);
+            
+            // Convert the rotation matrix to a quaternion and then extract the axis–angle.
+            QuaternionD rotationQuat = QuaternionD.CreateFromRotationMatrix(relativeMatrix);
+            Vector3D rotationAxis;
+            double rotationAngle;
+            rotationQuat.GetAxisAngle(out rotationAxis, out rotationAngle);
+            
+            // If not orienting, just return the angle error.
+            if (!orienting) {
+                return rotationAngle;
             }
-            return;
+            
+            // Convert rotationAngle from radians to degrees for gyro override inputs.
+            double overrideValue = Kp * rotationAngle * (180.0 / Math.PI);
+            
+            // For each gyro, transform the error (rotation axis) from world space to the gyro's local space.
+            foreach (var gyro in gyros)
+            {
+                Matrix gyroMatrix;
+                gyro.Orientation.GetMatrix(out gyroMatrix);
+                Vector3D localAxis = Vector3D.TransformNormal(rotationAxis, MatrixD.Transpose(gyroMatrix));
+                
+                // Set the gyro override values.
+                gyro.SetValueFloat("Pitch", (float)(localAxis.X * overrideValue));
+                gyro.SetValueFloat("Yaw",   (float)(-localAxis.Y * overrideValue));
+                gyro.SetValueFloat("Roll",  (float)(-localAxis.Z * overrideValue));
+                gyro.SetValueFloat("Power", 1f);
+                gyro.SetValueBool("Override", true);
+            }
+            return rotationAngle;
         }
-        /* ^ ---------------------------------------------------------------------- ^ */
-        /* ^ Autopilot Utilities                                                    ^ */
-        /* ^ ---------------------------------------------------------------------- ^ */
 
-        // Variables
-        public double pitch, roll, yaw;
-        public StaticRefBody refBody;
-        // List of gyros
-        public List<IMyGyro>;
-        
-        public Program() {
-            // initialize variables
-            pitch = 0;
-            roll = 0;
-            yaw = 0;
 
-            // Set the reference grid
-            SetReferenceGrid(this, out refBody);
-            if (refBody == null) {
-                Echo("No reference grid found.");
-                return;
+        public bool SetReferenceGrid(MyGridProgram program) {
+            if (shipRefBlock == null) {
+                program.Echo("No ship reference block found.");
+                return false;
             }
-            // Get Euler angles
-            GetEulerAngles(refBody, out pitch, out roll, out yaw);
-
-            // Get the gyros
+            gridRefBlock = FindTargetRefBlock(this);
+            if (gridRefBlock == null) {
+                program.Echo("No target reference block found.");
+                return false;
+            }
             GetMyGyros(this, out gyros);
             if (gyros == null || gyros.Count == 0) {
-                Echo("No gyros found.");
+                program.Echo("No gyros found.");
+                return false;
+            }
+            program.Echo("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
+            return true;
+        }
+
+        public bool IsInitialized() {
+            return (shipRefBlock != null && gridRefBlock != null && gyros != null && gyros.Count != 0);
+        }
+
+        // Start active gyro overrides.
+        public void StartGridAutoOrientation() {
+            if (!IsInitialized()) {
+                Echo("Reference not initialized. Cannot start auto orientation.");
+                return;
+            }
+            // Set update frequency if not already running the control loop.
+            if (!orienting) {
+                Runtime.UpdateFrequency = SAMPLE_RATE;
+                orienting = true;
+                Echo("Reorienting to " + gridRefBlock.CubeGrid.CustomName + ".");
+            }
+        }
+
+        // Stop active gyro overrides.
+        public void StopGridAutoOrientation() {
+            foreach (var gyro in gyros) {
+                gyro.SetValueBool("Override", false);
+                gyro.SetValueFloat("Power", 0f);
+                gyro.SetValueFloat("Pitch", 0f);
+                gyro.SetValueFloat("Yaw", 0f);
+                gyro.SetValueFloat("Roll", 0f);
+            }
+            Runtime.UpdateFrequency = CHECK_RATE;
+            orienting = false;
+            Echo("Orientation complete.");
+        }
+
+        public Program() {
+            // Register config parameters
+            ConfigFile.RegisterProperty("Kp", ConfigValueType.Float, 0.5f);
+            ConfigFile.RegisterProperty("precision", ConfigValueType.Float, 0.01f);
+            ConfigFile.RegisterProperty("invert-x", ConfigValueType.Int, 0);
+            ConfigFile.RegisterProperty("invert-y", ConfigValueType.Int, 0);
+            ConfigFile.RegisterProperty("invert-z", ConfigValueType.Int, 0);
+
+            // Initialize the program
+            Runtime.UpdateFrequency = STOP_RATE;
+            gridRefBlock = null;
+            running = false;
+            orienting = false;    
+            shipRefBlock = FindShipRefBlock(this);
+            if (shipRefBlock == null) {
                 return;
             }
         }
 
         public void Main(string args) {
-            // Orient Gyros to reference grid
-            OrientGyrosToGrid(gyros, pitch, roll, yaw);           
+            // If we're not initialized, try to initialize
+            if (!IsInitialized()) {
+                if (!SetReferenceGrid(this)) {
+                    Echo("Initialization failed. Exiting.");
+                    return;
+                }
+                Echo("Initialization complete.");
+                return;
+            }
+            
+            // Set update frequency if not already running the control loop.
+            if (!running) {
+                // Write default config if custom data is empty.
+                ConfigFile.CheckAndWriteDefaults(Me, this);
+                if (!ConfigFile.CheckAndReparse(Me, this)) {
+                    Echo("Configuration parsing failed. Please fix the errors and run again.");
+                    return;
+                }
+                running = true;
+                Echo("Starting auto orientation.");
+                return;
+            }
+
+            // Call the alignment function to update gyro overrides.    
+            double errorAngle = PerformGridAutoOrientation(shipRefBlock, gridRefBlock, gyros, ConfigFile.Get<float>("Kp"));
+            
+            Echo("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
+
+            if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("precision")) {
+                StopGridAutoOrientation();
+            } else if (!orienting && Math.Abs(errorAngle) > ConfigFile.Get<float>("precision")) {
+                StartGridAutoOrientation();
+            } else {
+                // Re-parse in case of changes in Custom Data.
+                // we'll only do this in the slow update for performance reasons.
+                if (!ConfigFile.CheckAndReparse(Me, this)) {
+                    Echo("Configuration parsing failed. Please fix the errors and run again.");
+                    return;
+                }
+            }
         }
+
 
 #region PreludeFooter
     }
