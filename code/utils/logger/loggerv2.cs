@@ -7,8 +7,10 @@
 /// falls back to program.Echo if none are found (if enabled), and optionally logs
 /// to the programmable block's CustomData (keeping only the 100 most recent messages).
 /// This version caches each panel’s wrapped text so that if the panel’s font/size
-/// haven’t changed, only new messages are wrapped. Additionally, if a message wraps,
-/// every wrapped line after the first is indented by two spaces for readability.
+/// haven’t changed, only new messages are wrapped. Wrapped lines after the first
+/// are indented by two spaces for readability. In addition, the logger defers the
+/// expensive wrapping and output writing until a configurable number of game ticks
+/// have elapsed (default 30 ticks). This improves efficiency in high-frequency updates.
 /// </summary>
 public class Logger
 {
@@ -24,6 +26,11 @@ public class Logger
     // Configurable options.
     public bool UseEchoFallback = true;
     public bool LogToCustomData = false;
+
+    // Property to control how many ticks between writes (default 30 ticks).
+    public int WriteUpdateInterval { get; set; } = 30;
+    // Internal counter for ticks since last write.
+    private int tickCounter = 0;
 
     // Cache information for each LCD panel.
     private Dictionary<IMyTextPanel, PanelCache> panelCaches = new Dictionary<IMyTextPanel, PanelCache>();
@@ -72,7 +79,9 @@ public class Logger
     }
 
     /// <summary>
-    /// Appends a formatted log message and updates all outputs.
+    /// Appends a formatted log message.
+    /// If the runtime update frequency is None or Once (i.e. not high-frequency),
+    /// the logger updates outputs immediately; otherwise, the update is deferred.
     /// </summary>
     /// <param name="formattedMessage">Message string (including log level prefix).</param>
     public void AppendMessage(string formattedMessage)
@@ -89,7 +98,63 @@ public class Logger
                 cache.LastMessageIndex = 0;
             }
         }
-        UpdateOutputs();
+        // For infrequent update frequencies, update immediately.
+        if (program.Runtime.UpdateFrequency == UpdateFrequency.None ||
+            program.Runtime.UpdateFrequency == UpdateFrequency.Once)
+        {
+            UpdateOutputs();
+        }
+        // Otherwise, defer output update until the next Tick call.
+    }
+
+    /// <summary>
+    /// Should be called on every script update.
+    /// In high-frequency update modes, this method uses the current update frequency
+    /// to increment an internal tick counter and determines when to wrap and write output.
+    /// </summary>
+    public void Tick()
+    {
+        MaybeUpdateOutputs();
+    }
+
+    /// <summary>
+    /// Checks the current update frequency and increments the tick counter accordingly.
+    /// If the next scheduled call (i.e. counter + increment) would exceed the write update interval,
+    /// the logger wraps and writes log messages and resets the counter.
+    /// For UpdateFrequency.None or Once, it always updates immediately.
+    /// </summary>
+    private void MaybeUpdateOutputs()
+    {
+        // Always update immediately if not in a continuous update mode.
+        if (program.Runtime.UpdateFrequency == UpdateFrequency.None ||
+            program.Runtime.UpdateFrequency == UpdateFrequency.Once)
+        {
+            UpdateOutputs();
+            tickCounter = 0;
+            return;
+        }
+
+        // Determine the tick increment based on the current update frequency.
+        int increment = 0;
+        if ((program.Runtime.UpdateFrequency & UpdateFrequency.Update1) != 0)
+            increment = 1;
+        else if ((program.Runtime.UpdateFrequency & UpdateFrequency.Update10) != 0)
+            increment = 10;
+        else if ((program.Runtime.UpdateFrequency & UpdateFrequency.Update100) != 0)
+            increment = 100;
+        else
+            increment = 1; // Fallback
+
+        // If the next update would exceed our desired interval, update now.
+        if (tickCounter + increment > WriteUpdateInterval)
+        {
+            UpdateOutputs();
+            tickCounter = 0;
+        }
+        else
+        {
+            tickCounter += increment;
+        }
     }
 
     /// <summary>
