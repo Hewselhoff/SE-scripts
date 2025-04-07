@@ -812,12 +812,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             public Quaternion orientOffset;
 
             // Set local rotations constants
-            public const MatrixD ROT_PLUS_90_X = MatrixD.CreateRotationX(Math.PI / 2);
-            public const MatrixD ROT_MINUS_90_X = MatrixD.CreateRotationX(-Math.PI / 2);
-            public const MatrixD ROT_PLUS_90_Y = MatrixD.CreateRotationY(Math.PI / 2);
-            public const MatrixD ROT_MINUS_90_Y = MatrixD.CreateRotationY(-Math.PI / 2);
-            public const MatrixD ROT_PLUS_90_Z = MatrixD.CreateRotationZ(Math.PI / 2);
-            public const MatrixD ROT_MINUS_90_Z = MatrixD.CreateRotationZ(-Math.PI / 2);
+            public MatrixD ROT_PLUS_90_X = MatrixD.CreateRotationX(Math.PI / 2);
+            public MatrixD ROT_MINUS_90_X = MatrixD.CreateRotationX(-Math.PI / 2);
+            public MatrixD ROT_PLUS_90_Y = MatrixD.CreateRotationY(Math.PI / 2);
+            public MatrixD ROT_MINUS_90_Y = MatrixD.CreateRotationY(-Math.PI / 2);
+            public MatrixD ROT_PLUS_90_Z = MatrixD.CreateRotationZ(Math.PI / 2);
+            public MatrixD ROT_MINUS_90_Z = MatrixD.CreateRotationZ(-Math.PI / 2);
 
             public RefAxes(IMyCubeGrid grid) {
                 refGrid = grid;
@@ -835,11 +835,13 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
 
             public Vector3D GetWorldUp() {
-                return TransformLocalToWorldVector(localRef.Up);
+                Vector3I up3I = new Vector3I(localRef.Up);
+                return TransformLocalToWorldVector(up3I);
             }
 
             public Vector3D GetWorldForward() {
-                return TransformLocalToWorldVector(localRef.Forward);
+                Vector3I forward3I = new Vector3I(localRef.Forward);
+                return TransformLocalToWorldVector(forward3I);
             }
 
             public void RotateAzimuth(int direction) {
