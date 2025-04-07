@@ -150,8 +150,7 @@ public class Logger
                     linesToShow = cache.WrappedLines.GetRange(cache.WrappedLines.Count - maxLines, maxLines);
                 }
                 string logText = string.Join("\n", linesToShow);
-                lcd.WritePublicText(logText, false);
-                lcd.ShowPublicTextOnScreen();
+                lcd.WriteText(logText, false);
             }
         }
         else if (UseEchoFallback)

@@ -175,8 +175,7 @@ namespace SpaceEngineers.UWBlockPrograms.LoggerExample {
                             linesToShow = cache.WrappedLines.GetRange(cache.WrappedLines.Count - maxLines, maxLines);
                         }
                         string logText = string.Join("\n", linesToShow);
-                        lcd.WritePublicText(logText, false);
-                        lcd.ShowPublicTextOnScreen();
+                        lcd.WriteText(logText, false);
                     }
                 }
                 else if (UseEchoFallback)
@@ -325,8 +324,8 @@ namespace SpaceEngineers.UWBlockPrograms.LoggerExample {
         /* ^ ---------------------------------------------------------------------- ^ */
 
         // Instance of our Logger.
-        private Logger logger;
-        public messageCounter = 0;
+        public Logger logger;
+        public int messageCounter = 0;
 
         public Program()
         {
