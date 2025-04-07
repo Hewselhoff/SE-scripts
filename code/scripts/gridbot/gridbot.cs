@@ -24,9 +24,10 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
 
         public IMyShipConnector gridRefBlock;
         public IMyRemoteControl shipRefBlock;
+        public RefAxes refAxes;
         public List<IMyGyro> gyros;
         public bool running, orienting;
-        // Set a global update frequency (sample rate)
+        // Set a update frequency constants
         public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
         public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
         public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
@@ -404,15 +405,38 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                                 if (valuePart.StartsWith("[") && valuePart.EndsWith("]"))
                                 {
                                     string inner = valuePart.Substring(1, valuePart.Length - 2);
-                                    var items = inner.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-                                    List<string> list = new List<string>();
-                                    parseSuccess = true;
-                                    foreach (var item in items)
+                                    // Split by commas, but handle quoted strings.
+                                    List<string> items = new List<string>();
+                                    bool inQuotes = false;
+                                    StringBuilder currentItem = new StringBuilder();
+                                    
+                                    for (int i = 0; i < inner.Length; i++)
                                     {
-                                        // Simply trim the item (you might add unquoting logic if needed)
-                                        list.Add(item.Trim());
+                                        char c = inner[i];
+                                        if (c == '"')
+                                        {
+                                            inQuotes = !inQuotes;
+                                            currentItem.Append(c);
+                                        }
+                                        else if (c == ',' && !inQuotes)
+                                        {
+                                            items.Add(currentItem.ToString().Trim());
+                                            currentItem.Clear();
+                                        }
+                                        else
+                                        {
+                                            currentItem.Append(c);
+                                        }
                                     }
-                                    parsedValue = list;
+                                    
+                                    // Add the last item.
+                                    if (currentItem.Length > 0)
+                                    {
+                                        items.Add(currentItem.ToString().Trim());
+                                    }
+                                    
+                                    parsedValue = items;
+                                    parseSuccess = true;
                                 }
                                 else
                                 {
@@ -421,29 +445,17 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                             }
                             break;
                         default:
-                            errors.Add($"Unsupported type for property '{key}'");
+                            errors.Add($"Unsupported property type for '{key}'.");
                             break;
                     }
 
-                    if (!parseSuccess)
+                    if (parseSuccess)
                     {
-                        errors.Add($"Failed to parse value for property '{key}': {valuePart}");
+                        prop.Value = parsedValue;
                     }
                     else
                     {
-                        // Store the successfully parsed value.
-                        prop.Value = parsedValue;
-                    }
-                }
-
-                // Check for any missing properties in the config.
-                foreach (var kvp in schema)
-                {
-                    if (!encountered.Contains(kvp.Key))
-                    {
-                        errors.Add($"Missing property: {kvp.Key}");
-                        // Optionally, you can assign the default if missing:
-                        kvp.Value.Value = kvp.Value.DefaultValue;
+                        errors.Add($"Failed to parse value for property '{key}': {valuePart}");
                     }
                 }
 
@@ -451,53 +463,54 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
 
             /// <summary>
-            /// Retrieves the parsed configuration value for the given property.
+            /// Gets the value of a property by name.
             /// </summary>
             /// <typeparam name="T">The expected type of the property.</typeparam>
-            /// <param name="propertyName">The name of the property.</param>
-            /// <returns>The value of the property.</returns>
-            public static T Get<T>(string propertyName)
+            /// <param name="name">The property name.</param>
+            /// <returns>The property value, or the default value if not found.</returns>
+            public static T Get<T>(string name)
             {
-                if (!schema.ContainsKey(propertyName))
-                    throw new Exception("Property not registered: " + propertyName);
-                return (T)schema[propertyName].Value;
+                if (schema.ContainsKey(name) && schema[name].Value != null)
+                {
+                    return (T)schema[name].Value;
+                }
+                else if (schema.ContainsKey(name))
+                {
+                    return (T)schema[name].DefaultValue;
+                }
+                throw new Exception($"Property not found: {name}");
             }
 
             /// <summary>
-            /// Check if custom data is empty and write defaults if needed.
+            /// Writes default configuration to the programmable block's CustomData if it's empty.
             /// </summary>
-            /// <param name="pb">The programmable block instance.</param>
-            /// <param name="program">The instance of MyGridProgram to call Echo.</param>
-            /// <returns>True if defaults were written, false otherwise.</returns>
-            public static void CheckAndWriteDefaults(IMyProgrammableBlock pb, MyGridProgram program)
+            /// <param name="pb">The programmable block.</param>
+            /// <param name="program">The grid program instance.</param>
+            /// <returns>True if successful, false otherwise.</returns>
+            public static bool CheckAndWriteDefaults(IMyProgrammableBlock pb, MyGridProgram program)
             {
                 if (string.IsNullOrWhiteSpace(pb.CustomData))
                 {
-                    string defaultConfig = GenerateDefaultConfigText();
-                    pb.CustomData = defaultConfig;
-                    logger.Info("No configuration data found. Default config added to Custom Data.");
+                    pb.CustomData = GenerateDefaultConfigText();
+                    configText = pb.CustomData;
+                    return true;
                 }
+                return true;
             }
 
             /// <summary>
-            /// Check if custom data changed and re-parse if needed.
+            /// Checks if the CustomData has changed and reparses it if necessary.
             /// </summary>
-            /// <param name="pb">The programmable block instance.</param>
-            /// <param name="program">The instance of MyGridProgram to call Echo.</param>
-            /// <returns>True if re-parsing was successful, false otherwise.</returns>
+            /// <param name="pb">The programmable block.</param>
+            /// <param name="program">The grid program instance.</param>
+            /// <returns>True if successful, false otherwise.</returns>
             public static bool CheckAndReparse(IMyProgrammableBlock pb, MyGridProgram program)
             {
-                // Check if the custom data has changed since the last parse.
-                if (string.IsNullOrWhiteSpace(pb.CustomData))
-                    return false; // No data to parse.
-
-                // If the custom data is different from the last parsed config text, re-parse it.
-                if (configText == null || pb.CustomData != configText)
+                if (configText != pb.CustomData)
                 {
                     List<string> errors;
                     if (!ParseConfig(pb.CustomData, out errors))
                     {
-                        // Print errors to the console.
                         foreach (var error in errors)
                         {
                             logger.Error(error);
@@ -788,6 +801,101 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         /* ^ ---------------------------------------------------------------------- ^ */
 
         /* v ---------------------------------------------------------------------- v */ 
+        /* v RefAxes Transformations                                               v */ 
+        /* v ---------------------------------------------------------------------- v */
+        public class RefAxes {
+            public MatrixD worldRef;
+            public MatrixD localRef;
+            public MatrixD localHome;
+            public IMyCubeGrid refGrid;
+            public Vector3I indexOffset;
+            public Quaternion orientOffset;
+
+            // Set local rotations constants
+            public const MatrixD ROT_PLUS_90_X = MatrixD.CreateRotationX(Math.PI / 2);
+            public const MatrixD ROT_MINUS_90_X = MatrixD.CreateRotationX(-Math.PI / 2);
+            public const MatrixD ROT_PLUS_90_Y = MatrixD.CreateRotationY(Math.PI / 2);
+            public const MatrixD ROT_MINUS_90_Y = MatrixD.CreateRotationY(-Math.PI / 2);
+            public const MatrixD ROT_PLUS_90_Z = MatrixD.CreateRotationZ(Math.PI / 2);
+            public const MatrixD ROT_MINUS_90_Z = MatrixD.CreateRotationZ(-Math.PI / 2);
+
+            public RefAxes(IMyCubeGrid grid) {
+                refGrid = grid;
+                worldRef = grid.WorldMatrix;
+                localRef = MatrixD.Identity;
+                localHome = MatrixD.Identity;
+                indexOffset = Vector3I.Zero;
+                orientOffset = Quaternion.Identity;
+            }
+
+            public Vector3D TransformLocalToWorldVector(Vector3I dirIndexVect) {
+                Vector3D fromPoint = refGrid.GridIntegerToWorld(indexOffset);
+                Vector3D toPoint   = refGrid.GridIntegerToWorld(indexOffset - Vector3I.Transform(dirIndexVect, orientOffset));
+                return fromPoint - toPoint;
+            }
+
+            public Vector3D GetWorldUp() {
+                return TransformLocalToWorldVector(localRef.Up);
+            }
+
+            public Vector3D GetWorldForward() {
+                return TransformLocalToWorldVector(localRef.Forward);
+            }
+
+            public void RotateAzimuth(int direction) {
+                if (direction > 0) {
+                    localRef *= ROT_PLUS_90_Y;
+                } else {
+                    localRef *= ROT_MINUS_90_Y;
+                }
+                UpdateWorldRef();
+            }
+
+            public void RotateElevation(int direction) {
+                if (direction > 0) {
+                    localRef *= ROT_PLUS_90_X;
+                } else {
+                    localRef *= ROT_MINUS_90_X;
+                }
+                UpdateWorldRef();
+            }
+
+            public void RotateRoll(int direction) {
+                if (direction > 0) {
+                    localRef *= ROT_PLUS_90_Z;
+                } else {
+                    localRef *= ROT_MINUS_90_Z;
+                }
+                UpdateWorldRef();
+            }
+
+            public void ResetHomeOrientation() {
+                localRef = MatrixD.Identity;
+                UpdateWorldRef();
+            }
+
+            public void SetHomeOrientation() {
+                localHome = localRef;
+                UpdateWorldRef();
+            }
+
+            public void GoToHomeOrientation() {
+                localRef = localHome;
+                UpdateWorldRef();
+            }
+
+            public void UpdateWorldRef() {
+                Vector3 worldUp = GetWorldUp();
+                Vector3 worldForward = GetWorldForward();
+                worldRef = MatrixD.CreateWorld(refGrid.GridIntegerToWorld(indexOffset), worldForward, worldUp);
+            }
+
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */ 
+        /* ^ RefAxes Transformations                                               ^ */ 
+        /* ^ ---------------------------------------------------------------------- ^ */
+
+        /* v ---------------------------------------------------------------------- v */ 
         /* v Grid Inspection Utilities                                              v */ 
         /* v ---------------------------------------------------------------------- v */
         public static IMyShipConnector FindTargetRefBlock(MyGridProgram program) {
@@ -845,7 +953,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         }
 
         public bool IsInitialized() {
-            return (shipRefBlock != null && gridRefBlock != null && gyros != null && gyros.Count != 0);
+            return (shipRefBlock != null && gridRefBlock != null && gyros != null && gyros.Count != 0 && refAxes != null);
         }
         /* ^ ---------------------------------------------------------------------- ^ */ 
         /* ^ Grid Inspection Utilities                                              ^ */ 
@@ -858,28 +966,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         // Returns the angle error in radians.
         public double ApplyOrientationUpdate(IMyTerminalBlock shipBlock, IMyTerminalBlock targetBlock, List<IMyGyro> gyros, double Kp = 1.0)
         {
-            // Use the ship grid's world matrix.
+            // Get ship and target orientations in world coords
             MatrixD shipMatrix = Me.CubeGrid.WorldMatrix;
-            MatrixD targetMatrix = targetBlock.CubeGrid.WorldMatrix;
-            
-            // Retrieve inversion flags from the config.
-            int invX = ConfigFile.Get<int>("invert-x");
-            int invY = ConfigFile.Get<int>("invert-y");
-            int invZ = ConfigFile.Get<int>("invert-z");
-            
-            // Determine the multipliers for each axis.
-            double factorX = (invX == 1 ? -1.0 : 1.0);
-            double factorY = (invY == 1 ? -1.0 : 1.0);
-            double factorZ = (invZ == 1 ? -1.0 : 1.0);
-            
-            // Pre-invert the target's orientation by modifying its basis vectors.
-            MatrixD modTargetMatrix = targetMatrix;
-            modTargetMatrix.Right = targetMatrix.Right * factorX;
-            modTargetMatrix.Up = targetMatrix.Up * factorY;
-            modTargetMatrix.Forward = targetMatrix.Forward * factorZ;
+            MatrixD targetMatrix = refAxes.worldRef;
             
             // Compute the relative rotation matrix (the error rotation from ship to target).
-            MatrixD relativeMatrix = modTargetMatrix * MatrixD.Transpose(shipMatrix);
+            MatrixD relativeMatrix = targetMatrix * MatrixD.Transpose(shipMatrix);
             
             // Convert the rotation matrix to a quaternion and then extract the axis–angle.
             QuaternionD rotationQuat = QuaternionD.CreateFromRotationMatrix(relativeMatrix);
@@ -1008,6 +1100,10 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         /* v ---------------------------------------------------------------------- v */
         /* v Command Handlers                                                       v */
         /* v ---------------------------------------------------------------------- v */
+        /// <summary>
+        /// Handles starting or stopping the auto-orientation behavior.
+        /// </summary>
+        /// <param name="val">True to start auto-orientation, false to stop.</param>
         public void Orient(bool val) {
             if (!IsInitialized()) {
                 logger.Error("No reference grid set. Cannot start auto orientation.");
@@ -1021,6 +1117,9 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             return;
         }
 
+        /// <summary>
+        /// If ship is connected to a static grid, sets it as the new reference grid.
+        /// </summary>
         public void Init(bool val) {
             if (!val) {
                 return;
@@ -1034,7 +1133,90 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             if (!SetReferenceGrid(this)) {
                 logger.Error("Failed to set reference grid.");
                 return;
-            }    
+            }
+            // Initialize reference axes
+            refAxes = new RefAxes(gridRefBlock.CubeGrid);            
+        }
+
+        /// <summary>
+        /// Handles the azimuth rotation command.
+        /// </summary>
+        /// <param name="direction">Direction of rotation: +1 or -1.</param>
+        public void AzimuthRotate(int direction) {
+            if (!IsInitialized()) {
+                logger.Error("No reference grid set. Cannot rotate.");
+                return;
+            }
+            if (direction != 1 && direction != -1) {
+                logger.Error("Invalid azimuth direction. Must be +1 or -1.");
+                return;
+            }
+            refAxes.RotateAzimuth(direction);
+        }
+
+        /// <summary>
+        /// Handles the elevation rotation command.
+        /// </summary>
+        /// <param name="direction">Direction of rotation: +1 or -1.</param>
+        public void ElevationRotate(int direction) {
+            if (!IsInitialized()) {
+                logger.Error("No reference grid set. Cannot rotate.");
+                return;
+            }
+            if (direction != 1 && direction != -1) {
+                logger.Error("Invalid elevation direction. Must be +1 or -1.");
+                return;
+            }
+            refAxes.RotateElevation(direction);
+        }
+
+        /// <summary>
+        /// Handles the roll rotation command.
+        /// </summary>
+        /// <param name="direction">Direction of rotation: +1 or -1.</param>
+        /// </summary>
+        public void RollRotate(int direction) {
+            if (!IsInitialized()) {
+                logger.Error("No reference grid set. Cannot rotate.");
+                return;
+            }
+            if (direction != 1 && direction != -1) {
+                logger.Error("Invalid roll direction. Must be +1 or -1.");
+                return;
+            }
+            refAxes.RotateRoll(direction);
+        }
+        /// <summary>
+        /// Handles the set-home command.
+        /// </summary>
+        public void SetHome() {
+            if (!IsInitialized()) {
+                logger.Error("No reference grid set. Cannot set home orientation.");
+                return;
+            }
+            refAxes.SetHomeOrientation();
+        }
+
+        /// <summary>
+        /// Handles the home command.
+        /// </summary>
+        public void GoHome() {
+            if (!IsInitialized()) {
+                logger.Error("No reference grid set. Cannot go to home orientation.");
+                return;
+            }
+            refAxes.GoToHomeOrientation();
+        }
+
+        /// <summary>
+        /// Handles the reset command.
+        /// </summary>
+        public void Reset() {
+            if (!IsInitialized()) {
+                logger.Error("No reference grid set. Cannot reset home orientation.");
+                return;
+            }
+            refAxes.ResetHomeOrientation();
         }
         /* ^ ---------------------------------------------------------------------- ^ */ 
         /* ^ Command Handlers                                                       ^ */ 
@@ -1053,13 +1235,19 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Register config parameters
             ConfigFile.RegisterProperty("Kp", ConfigValueType.Float, 0.5f);
             ConfigFile.RegisterProperty("tolerance", ConfigValueType.Float, 0.01f);
-            ConfigFile.RegisterProperty("invert-x", ConfigValueType.Int, 0);
-            ConfigFile.RegisterProperty("invert-y", ConfigValueType.Int, 0);
-            ConfigFile.RegisterProperty("invert-z", ConfigValueType.Int, 0);
 
             // Register command line arguments
             argParser.RegisterArg("orient", typeof(bool), false, false); // Turns auto-orientation on/off
             argParser.RegisterArg("init", typeof(bool), false, false); // Updates the reference grid
+            
+            // Register new command line arguments for discrete rotation and home orientation
+            argParser.RegisterArg("az", typeof(int), false, false); // Azimuth rotation
+            argParser.RegisterArg("el", typeof(int), false, false); // Elevation rotation
+            argParser.RegisterArg("roll", typeof(int), false, false); // Roll rotation
+            argParser.RegisterArg("set-home", typeof(bool), false, false); // Set home orientation
+            argParser.RegisterArg("home", typeof(bool), false, false); // Go to home orientation
+            argParser.RegisterArg("reset", typeof(bool), false, false); // Reset home orientation
+            
             argParser.OnlyAllowSingleArg = true;
 
             // Write default config if custom data is empty, and parse values.
@@ -1072,6 +1260,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Initialize the program
             Runtime.UpdateFrequency = STOP_RATE;
             gridRefBlock = null;
+            refAxes = null;
             running = false;
             orienting = false;    
             shipRefBlock = FindShipRefBlock(this);
@@ -1083,6 +1272,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 logger.Error("No gyros found.");
                 return;
             }
+
         }
 
         public void Main(string args) {
@@ -1109,6 +1299,27 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     case "--init":
                         bool initval = (bool)kvp.Value;
                         Init(initval);
+                        break;
+                    case "--az":
+                        int azDirection = (int)kvp.Value;
+                        AzimuthRotate(azDirection);
+                        break;
+                    case "--el":
+                        int elDirection = (int)kvp.Value;
+                        ElevationRotate(elDirection);
+                        break;
+                    case "--roll":
+                        int rollDirection = (int)kvp.Value;
+                        RollRotate(rollDirection);
+                        break;
+                    case "--set-home":
+                        SetHome();
+                        break;
+                    case "--home":
+                        GoHome();
+                        break;
+                    case "--reset":
+                        Reset();
                         break;
                     default:
                         logger.Error("Unknown argument: " + kvp.Key);
