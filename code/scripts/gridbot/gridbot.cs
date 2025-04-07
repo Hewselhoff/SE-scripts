@@ -1118,7 +1118,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         }
 
         /// <summary>
-        /// If ship is connected to a static grid, sets it as the new reference grid.
+        /// Handles initializing/reinitializing the reference grid used for orientation alignment.
         /// </summary>
         public void Init(bool val) {
             if (!val) {
@@ -1209,9 +1209,9 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         }
 
         /// <summary>
-        /// Handles the reset command.
+        /// Handles the reset-home command.
         /// </summary>
-        public void Reset() {
+        public void ResetHome() {
             if (!IsInitialized()) {
                 logger.Error("No reference grid set. Cannot reset home orientation.");
                 return;
@@ -1239,14 +1239,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Register command line arguments
             argParser.RegisterArg("orient", typeof(bool), false, false); // Turns auto-orientation on/off
             argParser.RegisterArg("init", typeof(bool), false, false); // Updates the reference grid
-            
-            // Register new command line arguments for discrete rotation and home orientation
             argParser.RegisterArg("az", typeof(int), false, false); // Azimuth rotation
             argParser.RegisterArg("el", typeof(int), false, false); // Elevation rotation
             argParser.RegisterArg("roll", typeof(int), false, false); // Roll rotation
             argParser.RegisterArg("set-home", typeof(bool), false, false); // Set home orientation
             argParser.RegisterArg("home", typeof(bool), false, false); // Go to home orientation
-            argParser.RegisterArg("reset", typeof(bool), false, false); // Reset home orientation
+            argParser.RegisterArg("reset-home", typeof(bool), false, false); // Reset home orientation
             
             argParser.OnlyAllowSingleArg = true;
 
@@ -1318,8 +1316,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     case "--home":
                         GoHome();
                         break;
-                    case "--reset":
-                        Reset();
+                    case "--reset-home":
+                        ResetHome();
                         break;
                     default:
                         logger.Error("Unknown argument: " + kvp.Key);
