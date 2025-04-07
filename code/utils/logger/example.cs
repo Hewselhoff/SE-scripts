@@ -18,7 +18,7 @@ using SpaceEngineers.Game.ModAPI.Ingame;
 using VRage.Game.ObjectBuilders.Definitions;
 
 // Change this namespace for each script you create.
-namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
+namespace SpaceEngineers.UWBlockPrograms.LoggerExample {
     public sealed class Program : MyGridProgram {
     // Your code goes between the next #endregion and #region
 #endregion
@@ -31,15 +31,18 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
         /// It writes output to LCD panels tagged with "[LOG]" on the same grid,
         /// falls back to program.Echo if none are found (if enabled), and optionally logs
         /// to the programmable block's CustomData (keeping only the 100 most recent messages).
+        /// This version caches each panel’s wrapped text so that if the panel’s font/size
+        /// haven’t changed, only new messages are wrapped. Additionally, if a message wraps,
+        /// every wrapped line after the first is indented by two spaces for readability.
         /// </summary>
         public class Logger
         {
             // Reference to the parent MyGridProgram.
-            private MyGridProgram program;
+            public MyGridProgram program;
             // List of LCD panels to which logs will be written.
             private List<IMyTextPanel> lcdPanels;
             // Internal log message storage.
-            private List<string> messages = new List<string>();
+            public List<string> messages = new List<string>();
             // Maximum number of messages to store.
             private const int MaxMessages = 100;
 
@@ -47,8 +50,25 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             public bool UseEchoFallback = true;
             public bool LogToCustomData = false;
 
+            // Cache information for each LCD panel.
+            private Dictionary<IMyTextPanel, PanelCache> panelCaches = new Dictionary<IMyTextPanel, PanelCache>();
+
+            /// <summary>
+            /// Caches the wrapped lines along with the LCD settings used to compute them.
+            /// </summary>
+            private class PanelCache
+            {
+                public string Font;
+                public float FontSize;
+                public float SurfaceWidth; // from panel.SurfaceSize.X
+                public List<string> WrappedLines = new List<string>();
+                // Index in the messages list up to which messages have been wrapped.
+                public int LastMessageIndex = 0;
+            }
+
             /// <summary>
             /// Constructor – automatically finds LCD panels with "[LOG]" in their name on the same grid.
+            /// Initializes the cache for each panel.
             /// </summary>
             public Logger(MyGridProgram program)
             {
@@ -65,6 +85,13 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
                     if (panel.CubeGrid == program.Me.CubeGrid)
                     {
                         lcdPanels.Add(panel);
+                        // Initialize cache for this panel.
+                        PanelCache cache = new PanelCache();
+                        cache.Font = panel.Font;
+                        cache.FontSize = panel.FontSize;
+                        cache.SurfaceWidth = panel.SurfaceSize.X;
+                        cache.LastMessageIndex = 0;
+                        panelCaches[panel] = cache;
                     }
                 }
             }
@@ -73,46 +100,174 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// Appends a formatted log message and updates all outputs.
             /// </summary>
             /// <param name="formattedMessage">Message string (including log level prefix).</param>
-            private void AppendMessage(string formattedMessage)
+            public void AppendMessage(string formattedMessage)
             {
                 messages.Add(formattedMessage);
                 // Ensure we only keep up to MaxMessages.
                 if (messages.Count > MaxMessages)
                 {
                     messages.RemoveAt(0);
+                    // When messages are removed, the cached wrapped text is no longer valid.
+                    foreach (var cache in panelCaches.Values)
+                    {
+                        cache.WrappedLines.Clear();
+                        cache.LastMessageIndex = 0;
+                    }
                 }
                 UpdateOutputs();
             }
 
             /// <summary>
             /// Updates all configured outputs (LCDs, Echo, CustomData) with the current log.
+            /// Uses cached wrapping for each panel when possible.
             /// </summary>
             private void UpdateOutputs()
             {
-                // Combine all messages into a single text block.
-                string logText = string.Join("\n", messages);
-
-                // Write the log text to each LCD panel (if any are available).
                 if (lcdPanels.Count > 0)
                 {
                     foreach (var lcd in lcdPanels)
                     {
+                        PanelCache cache;
+                        if (!panelCaches.TryGetValue(lcd, out cache))
+                        {
+                            cache = new PanelCache();
+                            cache.Font = lcd.Font;
+                            cache.FontSize = lcd.FontSize;
+                            cache.SurfaceWidth = lcd.SurfaceSize.X;
+                            cache.LastMessageIndex = 0;
+                            panelCaches[lcd] = cache;
+                        }
+
+                        // Check if the panel settings have changed.
+                        bool propertiesChanged = (cache.Font != lcd.Font ||
+                                                    cache.FontSize != lcd.FontSize ||
+                                                    cache.SurfaceWidth != lcd.SurfaceSize.X);
+                        if (propertiesChanged)
+                        {
+                            // Clear the cached wrapped lines and rewrap all messages.
+                            cache.WrappedLines.Clear();
+                            for (int i = 0; i < messages.Count; i++)
+                            {
+                                cache.WrappedLines.AddRange(WrapMessageForPanel(lcd, messages[i]));
+                            }
+                            cache.LastMessageIndex = messages.Count;
+                            // Update cache with current settings.
+                            cache.Font = lcd.Font;
+                            cache.FontSize = lcd.FontSize;
+                            cache.SurfaceWidth = lcd.SurfaceSize.X;
+                        }
+                        else if (cache.LastMessageIndex < messages.Count)
+                        {
+                            // Only wrap and add new messages.
+                            for (int i = cache.LastMessageIndex; i < messages.Count; i++)
+                            {
+                                cache.WrappedLines.AddRange(WrapMessageForPanel(lcd, messages[i]));
+                            }
+                            cache.LastMessageIndex = messages.Count;
+                        }
+
+                        // Determine how many lines can fit based on the panel’s height.
+                        float lineHeight = lcd.MeasureStringInPixels(new StringBuilder("W"), lcd.Font, lcd.FontSize).Y;
+                        int maxLines = Math.Max(1, (int)(lcd.SurfaceSize.Y / lineHeight));
+                        List<string> linesToShow = cache.WrappedLines;
+                        if (cache.WrappedLines.Count > maxLines)
+                        {
+                            linesToShow = cache.WrappedLines.GetRange(cache.WrappedLines.Count - maxLines, maxLines);
+                        }
+                        string logText = string.Join("\n", linesToShow);
                         lcd.WritePublicText(logText, false);
-                        // Ensure the LCD is set to display the public text.
                         lcd.ShowPublicTextOnScreen();
                     }
                 }
-                // If no LCDs are available and fallback is enabled, use program.Echo.
                 else if (UseEchoFallback)
                 {
+                    string logText = string.Join("\n", messages);
                     program.Echo(logText);
                 }
 
-                // Optionally write the log to the programmable block's CustomData.
                 if (LogToCustomData)
                 {
+                    string logText = string.Join("\n", messages);
                     program.Me.CustomData = logText;
                 }
+            }
+
+            /// <summary>
+            /// Wraps a single log message for a given text panel based on its width and font settings.
+            /// Uses a binary search approach to minimize per-character iterations.
+            /// If a message wraps onto multiple lines, all but the first line are prefixed with two spaces.
+            /// </summary>
+            /// <param name="panel">The text panel for which to wrap the message.</param>
+            /// <param name="message">The message to wrap.</param>
+            /// <returns>A list of lines after wrapping.</returns>
+            private List<string> WrapMessageForPanel(IMyTextPanel panel, string message)
+            {
+                List<string> lines = new List<string>();
+                int start = 0;
+                bool firstLine = true;
+                while (start < message.Length)
+                {
+                    // Determine how many characters from 'start' fit on one line.
+                    int maxFit = FindMaxSubstringLengthThatFits(panel, message, start);
+                    int breakPoint = start + maxFit;
+
+                    // If the message continues and there is a space in the substring, break at the last space.
+                    if (breakPoint < message.Length)
+                    {
+                        int lastSpace = message.LastIndexOf(' ', breakPoint - 1, maxFit);
+                        if (lastSpace > start)
+                        {
+                            maxFit = lastSpace - start;
+                            breakPoint = start + maxFit;
+                        }
+                    }
+
+                    string line = message.Substring(start, maxFit);
+                    // For readability, indent all wrapped lines after the first.
+                    if (!firstLine)
+                    {
+                        line = "  " + line;
+                    }
+                    lines.Add(line);
+
+                    firstLine = false;
+                    // Move past the extracted substring and any subsequent space.
+                    start = breakPoint;
+                    if (start < message.Length && message[start] == ' ')
+                        start++;
+                }
+                return lines;
+            }
+
+            /// <summary>
+            /// Uses binary search to determine the maximum number of characters (starting at 'start')
+            /// that can fit on one line of the panel.
+            /// </summary>
+            /// <param name="panel">The text panel.</param>
+            /// <param name="message">The full message.</param>
+            /// <param name="start">The starting index in the message.</param>
+            /// <returns>The number of characters that fit on one line.</returns>
+            private int FindMaxSubstringLengthThatFits(IMyTextPanel panel, string message, int start)
+            {
+                int low = 1;
+                int high = message.Length - start;
+                int best = 1;
+                while (low <= high)
+                {
+                    int mid = (low + high) / 2;
+                    string substring = message.Substring(start, mid);
+                    Vector2 size = panel.MeasureStringInPixels(new StringBuilder(substring), panel.Font, panel.FontSize);
+                    if (size.X <= panel.SurfaceSize.X)
+                    {
+                        best = mid;
+                        low = mid + 1;
+                    }
+                    else
+                    {
+                        high = mid - 1;
+                    }
+                }
+                return best;
             }
 
             /// <summary>
@@ -122,8 +277,8 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// <remarks>Example: "T12:34:56"</remarks>
             public string Timestamp()
             {
-                DateTime now = System.DateTime.UtcNow;
-                return "T" + now.ToString("HH:mm:ss");        
+                DateTime now = DateTime.UtcNow;
+                return "T" + now.ToString("HH:mm:ss");
             }
 
             /// <summary>
@@ -131,7 +286,7 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// </summary>
             public void Info(string message)
             {
-                AppendMessage("[INFO " + Timestamp() "]:" + message);
+                AppendMessage("[INFO " + Timestamp() + "]:" + message);
             }
 
             /// <summary>
@@ -139,7 +294,7 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// </summary>
             public void Warning(string message)
             {
-                AppendMessage("[WARNING " + Timestamp() "]:" + message);
+                AppendMessage("[WARNING " + Timestamp() + "]:" + message);
             }
 
             /// <summary>
@@ -147,7 +302,7 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             /// </summary>
             public void Error(string message)
             {
-                AppendMessage("[ERROR " + Timestamp() "]:" + message);
+                AppendMessage("[ERROR " + Timestamp() + "]:" + message);
             }
 
             /// <summary>
@@ -156,6 +311,12 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             public void Clear()
             {
                 messages.Clear();
+                // Clear the cache for each panel.
+                foreach (var cache in panelCaches.Values)
+                {
+                    cache.WrappedLines.Clear();
+                    cache.LastMessageIndex = 0;
+                }
                 UpdateOutputs();
             }
         }
@@ -163,29 +324,35 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
         /* ^ Logging API                                                            ^ */
         /* ^ ---------------------------------------------------------------------- ^ */
 
-
         // Instance of our Logger.
         private Logger logger;
+        public messageCounter = 0;
 
         public Program()
         {
             // Initialize the logger, enabling all output types.
             logger = new Logger(this)
             {
-                UseEchoFallback = true,    // Fallback to program.Echo if no LCDs are available.
-                LogToCustomData = true     // Enable logging to CustomData.
+                UseEchoFallback = false,    // Fallback to program.Echo if no LCDs are available.
+                LogToCustomData = false     // Enable logging to CustomData.
+                
             };
 
             // Log an initial message to indicate the script has started.
             logger.Info("Script initialization complete.");
+            logger.Info("This is an info message.");
+            logger.Warning("This is a warning message.");
+            logger.Error("This is an error message.");
+
+            Runtime.UpdateFrequency = UpdateFrequency.Update100; // Set the update frequency to every 10 ticks.
         }
 
         public void Main(string argument)
         {
-            // Log one message of each level.
-            logger.Info("This is an info message.");
-            logger.Warning("This is a warning message.");
-            logger.Error("This is an error message.");
+            messageCounter++;
+            // Log one message of each call
+            logger.Info("This is a test info message (" + messageCounter + "). It's particularly long so that we can test the LCD line-wrapping functionality of the Logger API.");
+            
         }
 
 #region PreludeFooter
