@@ -54,22 +54,61 @@ Caml supports lists of all above types except lists (nested lists are not suppor
     aStringList: [Foo, Bar]
     ```
 
+## Sub-Configs
+Caml supports one-level sub-configurations, which are configurations nested within another configuration. Sub-configs are defined using the same syntax as top-level configs but are indented to indicate their hierarchy, e.g.:
+```yaml
+subConfig:
+  key: value
+  ...
+```
+
+>**NOTE:** CAML only supports one level of sub-configs. You cannot nest sub-configs within other sub-configs.
+
+### Indentation Rules
+1. Sub configs must be indented with spaces (not tabs).
+2. Each sub config can be indented with any number of spaces, so long as it is consistent within that sub config.
+
 ## Example Caml Configuration
 
-Below is an example of a complete Caml configuration file:
+### A Root-Level Only Config
+Below is an example of a configuration file that contains only root-level settings:
 
 ```yaml
-# Caml configuration example
-
 # Numerical settings
-MaxSpeed: 10.5
-MinSpeed: 1.0
-
+anInteger: 42
+afloat: 3.14
 # String setting
-ShipName: Enterprise
-
+aString: Foo
 # List settings
-anIntList: [100, 200, 300]
+anIntList: [1, 1, 2, 3, 5, 8, 13]
 aFloatList: [0.25, 0.50, 0.75]
-aStringList: [Foo, Bar]
+aStringList: [Bar, Baz]
+```
+
+### Config Split into Two Sub-Config
+This example shows how to split a configuration into two sub-configurations, `subConfigA` and `subConfigB`, each containing different settings. This can be useful if your script is notianally partitioned into multiple components or modules, and you want to keep the settings for each component separate.
+```yaml
+# Numerical settings
+subConfigA:
+  anInteger: 42
+  afloat: 3.14
+  anIntList: [1, 1, 2, 3, 5, 8, 13]
+subConfigB:
+  aString: Foo
+  aFloatList: [0.25, 0.50, 0.75]
+  aStringList: [Bar, Baz]
+```
+
+### Mixture of Root-Level and Sub-Config
+This example shows a configuration that contains both root-level settings and a sub-configuration. This is useful when you want to keep some settings at the root level for easy access while also grouping related settings into a sub-configuration.
+```yaml
+# Root-level settings
+anInteger: 42
+afloat: 3.14
+anIntList: [1, 1, 2, 3, 5, 8, 13]
+# Sub-configuration
+subConfig:
+  aString: Bar
+  aFloatList: [0.25, 0.50, 0.75]
+  aStringList: [Bar, Baz]
 ```
