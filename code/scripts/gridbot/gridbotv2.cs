@@ -22,18 +22,411 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
     public sealed class Program : MyGridProgram {
 #endregion
 
-        public IMyShipConnector gridRefBlock;
-        public IMyRemoteControl shipRefBlock;
-        public RefAxes refAxes;
-        // Sampling constants
-        public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
-        public const UpdateType CHECK_TYPE = UpdateType.Update100;
-        public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
-        public const UpdateType SAMPLE_TYPE = UpdateType.Update1;
-        public const UpdateFrequency STOP_RATE = UpdateFrequency.None; 
-        public const UpdateType STOP_TYPE = ~(SAMPLE_TYPE | CHECK_TYPE); // Anything thats not SAMPLE_TYPE or CHECK_TYPE
-        // Create an instance of ArgParser.
-        ArgParser argParser = new ArgParser();
+        /* TODO:
+         *   - Add RefPos class for tracking and manipulating reference positions.
+         *   - Add GridPos class for controlling ship position.
+         */
+        
+        /* v ---------------------------------------------------------------------- v */
+        /* v Grid State                                                             v */
+        /* v ---------------------------------------------------------------------- v */
+        public class GridState {
+            // Program reference
+            public MyGridProgram program;
+            // Sampling constants
+            public static const UpdateFrequency CHECK_FREQUENCY = UpdateFrequency.Update100;
+            public static const UpdateType CHECK_TYPE = UpdateType.Update100;
+            public static const UpdateFrequency SAMPLE_FREQUENCY = UpdateFrequency.Update1;
+            public static const UpdateType SAMPLE_TYPE = UpdateType.Update1;
+            public static const UpdateFrequency STOP_FREQUENCY = UpdateFrequency.None; 
+            public static const UpdateType STOP_TYPE = ~(SAMPLE_TYPE | CHECK_TYPE); // Anything that's not SAMPLE_TYPE or CHECK_TYPE
+            // Runtime update state
+            public UpdateFrequency updateFrequency;
+            public UpdateType updateType;
+            // Script state
+            public bool isRunning = false; // Indicates if ANY module is running or ALL modules are stopped
+
+            /* Constructors --------------------------------------------------------- */
+            public GridState(MyGridProgram program) {
+                this.program = program;
+                updateFrequency = STOP_FREQUENCY;
+                updateType = STOP_TYPE;
+            }
+
+            /* Update State Methods ------------------------------------------------- */
+            /// <summary>
+            /// This method should be called at the beginning of the program's Main method.
+            /// </summary>
+            /// <param name="currentUpdateType">The UpdateType passe to the current call of Main()</param>
+            public void PreMain(UpdateType currentUpdateType) {
+                // Init update state
+                updateFrequency = UpdateFrequency.None; // Clear the update frequency
+                updateType = currentUpdateType; // Store the update type for the current call
+            }   
+
+            /// <summary>
+            /// This method should be called at the end of the program's Main method.
+            /// </summary>
+            public void PostMain() {
+                // Update runtime
+                program.Runtime.UpdateFrequency = updateFrequency;
+                isRunning = (updateFrequency != STOP_FREQUENCY);
+            }
+
+            /// <summary>
+            /// Adds an update frequency to the runtime.
+            /// </summary>
+            /// <param name="toAdd">Update frequency to be added to the runtime</param>
+            public void AddUpdateFrequency(UpdateFrequency toAdd) {
+                updateFrequency |= toAdd;
+            }
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */
+        /* ^ Grid State                                                             ^ */
+        /* ^ ---------------------------------------------------------------------- ^ */
+
+        /* v ---------------------------------------------------------------------- v */ 
+        /* v Reference Axes                                                         v */ 
+        /* v ---------------------------------------------------------------------- v */
+        public class RefAxes {
+            public MatrixD worldRef;
+            public MatrixD localRef;
+            public MatrixD localHome;
+            public IMyCubeGrid refGrid;
+            public Vector3I indexOffset;
+            public Quaternion orientOffset;
+
+            // Set local rotations constants
+            public MatrixD ROT_PLUS_90_X = MatrixD.CreateRotationX(Math.PI / 2);
+            public MatrixD ROT_MINUS_90_X = MatrixD.CreateRotationX(-Math.PI / 2);
+            public MatrixD ROT_PLUS_90_Y = MatrixD.CreateRotationY(Math.PI / 2);
+            public MatrixD ROT_MINUS_90_Y = MatrixD.CreateRotationY(-Math.PI / 2);
+            public MatrixD ROT_PLUS_90_Z = MatrixD.CreateRotationZ(Math.PI / 2);
+            public MatrixD ROT_MINUS_90_Z = MatrixD.CreateRotationZ(-Math.PI / 2);
+
+            public RefAxes(IMyCubeGrid grid) {
+                refGrid = grid;
+                worldRef = grid.WorldMatrix;
+                localRef = MatrixD.Identity;
+                localHome = MatrixD.Identity;
+                indexOffset = Vector3I.Zero;
+                orientOffset = Quaternion.Identity;
+            }
+
+            public Vector3D TransformLocalToWorldVector(Vector3I dirIndexVect) {
+                Vector3D fromPoint = refGrid.GridIntegerToWorld(indexOffset);
+                Vector3D toPoint   = refGrid.GridIntegerToWorld(indexOffset - Vector3I.Transform(dirIndexVect, orientOffset));
+                return fromPoint - toPoint;
+            }
+
+            public Vector3D GetWorldUp() {
+                Vector3I up3I = new Vector3I(localRef.Up);
+                return TransformLocalToWorldVector(up3I);
+            }
+
+            public Vector3D GetWorldForward() {
+                Vector3I forward3I = new Vector3I(localRef.Forward);
+                return TransformLocalToWorldVector(forward3I);
+            }
+
+            public void RotateAzimuth(int direction) {
+                if (direction > 0) {
+                    localRef *= ROT_PLUS_90_Y;
+                } else {
+                    localRef *= ROT_MINUS_90_Y;
+                }
+                UpdateWorldRef();
+            }
+
+            public void RotateElevation(int direction) {
+                if (direction > 0) {
+                    localRef *= ROT_PLUS_90_X;
+                } else {
+                    localRef *= ROT_MINUS_90_X;
+                }
+                UpdateWorldRef();
+            }
+
+            public void RotateRoll(int direction) {
+                if (direction > 0) {
+                    localRef *= ROT_PLUS_90_Z;
+                } else {
+                    localRef *= ROT_MINUS_90_Z;
+                }
+                UpdateWorldRef();
+            }
+
+            public void ResetHomeOrientation() {
+                localRef = MatrixD.Identity;
+                UpdateWorldRef();
+            }
+
+            public void SetHomeOrientation() {
+                localHome = localRef;
+                UpdateWorldRef();
+            }
+
+            public void GoToHomeOrientation() {
+                localRef = localHome;
+                UpdateWorldRef();
+            }
+
+            public void UpdateWorldRef() {
+                Vector3 worldUp = GetWorldUp();
+                Vector3 worldForward = GetWorldForward();
+                worldRef = MatrixD.CreateWorld(refGrid.GridIntegerToWorld(indexOffset), worldForward, worldUp);
+            }
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */ 
+        /* ^ Reference Axes                                                         ^ */ 
+        /* ^ ---------------------------------------------------------------------- ^ */
+
+        /* v ---------------------------------------------------------------------- v */
+        /* v Grid Context                                                           v */
+        /* v ---------------------------------------------------------------------- v */
+        public class GridContext {
+            // Program Reference
+            public MyGridProgram program;
+            // First call flag
+            public bool firstCall;
+            // Reference blocks
+            public IMyShipConnector gridRefBlock; // Ship reference block
+            public IMyRemoteControl shipRefBlock; // Grid reference block
+            // Reference axes
+            public RefAxes refAxes;
+            // State
+            public GridState state;
+            // Logger
+            public Logger logger;
+            // Context argument parser
+            public ArgParser argParser;
+            // Script config
+            public ConfigFile config;
+            // Flags
+            public bool configUpdated;
+
+            /* Constructors --------------------------------------------------------- */
+            public GridContext(MyGridProgram program) {
+                this.program = program;
+                // Initialize the global logger    
+                this.logger = new Logger(program)
+                {
+                    UseEchoFallback = true,    // Fallback to program.Echo if no LCDs are available.
+                    LogToCustomData = false    // Disable logging to CustomData.
+                };
+                // Initialize reference grid
+                this.gridRefBlock = null;      
+                this.refAxes = null;
+                // Initialize ship reference
+                this.shipRefBlock = FindShipRefBlock();
+                // Initialize state
+                this.state = new GridState(program);
+                // Initialize argument parser
+                this.argParser = new ArgParser();
+                this.argParser.RegisterArg("set", typeof(bool), false, false); // set the reference grid
+                // Initialize config
+                this.config = new ConfigFile(program.Me, program);
+                this.config.Logger = logger.Error; // Set the logger for the config
+                // Initialize first call flag
+                this.firstCall = true;
+            }
+
+            /* Bookkeeping Methods ------------------------------------------------- */
+            /// <summary>
+            /// Anything that needs to be done on the first call of Main() should be handled here.
+            /// </summary>
+            private void OnFirstCall() {
+                // Finalize config once modules have had a chance to register any sub configs
+                if (!config.FinalizeRegistration()) {
+                    logger.Error("Failed to finalize config registration.");
+                    return;
+                }
+                // Parse and initialize the config settings
+                if (!config.CheckAndReparse()) {
+                    logger.Error("Failed to parse config file.");
+                    return;
+                }
+                configUpdated = true;
+                firstCall = false;
+                return;
+            }
+
+            /// <summary>
+            /// This method should be called at the beginning of a sampling type update.
+            /// </summary>
+            public void OnSampleTypeUpdate() {
+                // Nothing to do for now
+                return;
+            }
+
+            /// <summary>
+            /// This method should be called at the beginning of a check type update.
+            /// </summary>
+            public void OnCheckTypeUpdate() {
+                // Always check for config updates on check type updates
+                if (config.CheckAndReparse()) {
+                    configUpdated = true;
+                }
+            }
+
+            /// <summary>
+            /// This method should be called at the beginning of the program's Main method.
+            /// </summary>
+            /// <param name="currentUpdateType">The UpdateType passe to the current call of Main()</param>
+            public void PreMain(UpdateType currentUpdateType) {
+                // Initialize the state
+                state.PreMain(currentUpdateType);
+                configUpdated = false;
+                // Check if this is the first call
+                if (firstCall) {
+                    OnFirstCall();
+                }
+
+                // Do any update type specific tasks
+                switch (currentUpdateType) {
+                    case state.SAMPLE_TYPE:
+                        OnSampleTypeUpdate();
+                        break;
+                    case state.CHECK_TYPE:
+                        OnCheckTypeUpdate();
+                        break;
+                    default:
+                        // Do nothing
+                        break;
+                }
+            }
+
+            /// <summary>
+            /// This method should be called at the end of the program's Main method.
+            /// </summary>
+            public void PostMain() {
+                // Update the state
+                state.PostMain();
+            }
+
+            /* Grid inspection methods ---------------------------------------------- */
+            /// <summary>
+            /// Finds the target grid reference block (IMyShipConnector) on a connected static grid.
+            /// </summary>
+            /// <returns>The found IMyShipConnector block, or null if not found.</returns>
+            public IMyShipConnector FindTargetRefBlock() {
+                // Get all connectors on the grid
+                List<IMyShipConnector> connectors = new List<IMyShipConnector>();
+                program.GridTerminalSystem.GetBlocksOfType(connectors);
+
+                // Verify that the ship has at least one connector
+                if (connectors.Count == 0) {
+                    logger.Error("No connectors found on the ship.");
+                    return null;
+                }
+
+                // Loop through the connectors to find one that is locked to a static grid
+                IMyShipConnector otherConnector = null;
+                foreach (var connector in connectors) {
+                    if (connector.CubeGrid == program.Me.CubeGrid && connector.Status == MyShipConnectorStatus.Connected) {
+                        otherConnector = connector.OtherConnector;
+                        if (otherConnector != null && otherConnector.CubeGrid.IsStatic) {
+                            logger.Info("Found ref connector: " + connector.CustomName);
+                            return otherConnector;
+                        }
+                    }
+                }
+
+                // If no connector is found, return null
+                if (otherConnector == null) {
+                    logger.Error("No connected grids found.");
+                    return null;
+                }
+
+                // Otherwise, the connected grid must not be static
+                logger.Error("Ship must be connected to a static grid.");
+                return null;
+            }
+
+            /// <summary>
+            /// Finds the ship reference block (IMyRemoteControl) on the same grid as the programmable block.
+            /// </summary>
+            /// <returns>The found IMyRemoteControl block, or null if not found.</returns>
+            public IMyRemoteControl FindShipRefBlock() {
+                List<IMyRemoteControl> remotes = new List<IMyRemoteControl>();
+                program.GridTerminalSystem.GetBlocksOfType(remotes);
+                var shipRefBlock = remotes.FirstOrDefault(r => r.CubeGrid == program.Me.CubeGrid);
+                if (shipRefBlock == null) {
+                    logger.Error("Ship has no remote control.");
+                    return null;
+                }
+                logger.Info("Found ship reference block: " + shipRefBlock.CustomName);
+                return shipRefBlock;
+            }
+
+            /// <summary>
+            /// Checks if a reference grid is set.
+            /// </summary>
+            /// <returns>True if a reference grid is set, false otherwise.</returns>
+            public bool HasReferenceGrid() {
+                return (shipRefBlock != null && gridRefBlock != null && refAxes != null);
+            }
+
+            /* Argument Handling ---------------------------------------------------- */
+            /// <summary>
+            /// Checks for a connected static grid and, if found, sets it as the reference grid.
+            /// </summary>
+            /// <returns>True if the reference grid was set successfully, false otherwise.</returns>
+            public bool SetReferenceGrid(bool argval) {
+                if (!argval) {
+                    return true; // just in case
+                }
+                IMyShipConnector temp = FindTargetRefBlock();
+                if (temp == null) {
+                    logger.Error("No target reference block found.");
+                    return false;
+                }
+                gridRefBlock = temp;
+
+                // Set the reference axes
+                refAxes = new RefAxes(gridRefBlock.CubeGrid);
+                if (refAxes == null) {
+                    logger.Error("Failed to set reference axes.");
+                    return false;
+                }
+
+                logger.Info("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
+                return true;
+            }
+            /// <summary>
+            /// Parse arguments and execute the command.
+            /// </summary>
+            /// <param name="args">The arguments to parse.</param>
+            /// <returns>True if the command was executed successfully, false otherwise.</returns>
+            public bool HandleCommand(string args) {
+                bool ret = true;
+                if !(argParser.Parse(args)) {
+                    // Log any errors from the argument parser
+                    foreach (var err in argParser.Errors) {
+                        logger.Error(err);
+                    }
+                    return false;
+                }
+                foreach (var kvp in argParser.GetParsedArgs())
+                {
+                    switch (kvp.Key)
+                    {
+                        case "--set":
+                            bool argval = (bool)kvp.Value;
+                            ret &= SetReferenceGrid(argval);
+                            break;
+                        default:
+                            logger.Error("GridContext received unknown argument: " + kvp.Key);
+                            ret = false;
+                            break;
+                    }
+                }
+                return ret;
+            }                            
+        }
+        /* ^ ---------------------------------------------------------------------- ^ */
+        /* ^ Grid Context                                                           ^ */
+        /* ^ ---------------------------------------------------------------------- ^ */
 
         /* v ---------------------------------------------------------------------- v */
         /* v Logging API                                                            v */
@@ -379,9 +772,6 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Internal flag to indicate that registration has been finalized.
             private bool isFinalized = false;
 
-            // Error log for the last parse or API call.
-            public List<string> ErrorLog { get; private set; } = new List<string>();
-
             // A logging delegate which scripts can set to route errors as they wish.
             // By default, it is set to a no‑op.
             public Action<string> Logger { get; set; } = message => { };
@@ -396,21 +786,16 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
 
             /// <summary>
-            /// Logs an error by adding it to the ErrorLog and calling the Logger.
-            /// </summary>
-            private void LogError(string message)
-            {
-                ErrorLog.Add(message);
-                Logger(message);
-            }
-
-            /// <summary>
             /// Checks that this instance has been finalized; if not, throws an exception.
             /// </summary>
-            private void EnsureFinalized()
+            /// <returns>True if finalized, false otherwise.</returns>
+            private bool EnsureFinalized()
             {
-                if (!isFinalized)
-                    throw new Exception("Configuration file has not been finalized. Call FinalizeRegistration() before using the config.");
+                if (!isFinalized) {
+                    Logger("Configuration file has not been finalized. Call FinalizeRegistration() before using the config.");
+                    return false;
+                }
+                return true;
             }
 
             /// <summary>
@@ -420,12 +805,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             {
                 if (isFinalized)
                 {
-                    LogError("Cannot register new property after finalization: " + name);
+                    Logger("Cannot register new property after finalization: " + name);
                     return;
                 }
                 if (properties.ContainsKey(name))
                 {
-                    LogError("Property already registered: " + name);
+                    Logger("Property already registered: " + name);
                     return;
                 }
                 properties[name] = new ConfigProperty
@@ -445,12 +830,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             {
                 if (isFinalized)
                 {
-                    LogError("Cannot register new property after finalization: " + subConfigName + "/" + name);
+                    Logger("Cannot register new property after finalization: " + subConfigName + "/" + name);
                     return;
                 }
                 if (!subConfigs.ContainsKey(subConfigName))
                 {
-                    LogError("Sub config '" + subConfigName + "' does not exist. Register the sub config first.");
+                    Logger("Sub config '" + subConfigName + "' does not exist. Register the sub config first.");
                     return;
                 }
                 // Forward the registration to the sub config.
@@ -465,12 +850,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             {
                 if (isFinalized)
                 {
-                    LogError("Cannot register new sub config after finalization: " + name);
+                    Logger("Cannot register new sub config after finalization: " + name);
                     return;
                 }
                 if (subConfigs.ContainsKey(name))
                 {
-                    LogError("Sub config already registered: " + name);
+                    Logger("Sub config already registered: " + name);
                     return;
                 }
                 // Create a new sub config with the same programmable block and program.
@@ -482,12 +867,13 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// This checks that every registered sub config contains at least one property.
             /// It then marks the config file as ready for use and writes default config if necessary.
             /// </summary>
-            public void FinalizeRegistration()
+            /// 
+            public bool FinalizeRegistration()
             {
                 if (isFinalized)
                 {
-                    LogError("Configuration file already finalized.");
-                    return;
+                    Logger("Configuration file already finalized.");
+                    return false;
                 }
 
                 // Finalize all sub configs first.
@@ -495,29 +881,37 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 {
                     ConfigFile subCfg = kvp.Value;
                     // Finalize sub config registrations recursively.
-                    subCfg.FinalizeRegistration();
+                    if (!subCfg.FinalizeRegistration());
+                    {
+                        Logger($"Failed to finalize sub config '{kvp.Key}'.");
+                        return false;
+                    }
                     // Ensure the sub config has at least one property or sub config.
                     if (subCfg.properties.Count == 0 && subCfg.subConfigs.Count == 0)
                     {
-                        LogError($"Sub config '{kvp.Key}' is empty. It must contain at least one property.");
+                        Logger($"Sub config '{kvp.Key}' is empty. It must contain at least one property.");
+                        return false;
                     }
                 }
 
-                if (ErrorLog.Count > 0)
-                    throw new Exception("Configuration registration finalization failed. Check ErrorLog for details.");
-
                 isFinalized = true;
                 // Write default config to CustomData if needed.
-                CheckAndWriteDefaults();
+                if(!CheckAndWriteDefaults())
+                {
+                    Logger("Failed to write default config to CustomData.");
+                    return false;
+                }
+                return true;
             }
 
             /// <summary>
             /// Generates the default CAML config text, including both root properties and sub configurations.
             /// Sub config blocks are indented using their own default indent (typically detected at parse time).
             /// </summary>
+            /// <returns>The generated config text. Null if we failed to generate.</returns>
             public string GenerateDefaultConfigText()
             {
-                EnsureFinalized();
+                if (!EnsureFinalized()) return null;
 
                 StringBuilder sb = new StringBuilder();
                 // Output root-level properties.
@@ -547,13 +941,11 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// <summary>
             /// Parses a CAML configuration string.
             /// Supports root-level properties and one level of sub configs with dynamic indent detection.
-            /// Returns true if no errors occurred; errors are available via ErrorLog.
+            /// Returns true if no errors occurred;
             /// </summary>
             public bool ParseConfig(string configText)
             {
-                EnsureFinalized();
-                // Clear errors for this parse run.
-                ErrorLog.Clear();
+                if (!EnsureFinalized()) return false;
 
                 // Split the text into lines.
                 var lines = configText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
@@ -585,9 +977,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                             currentSubConfigName = trimmed.Substring(0, colonIndex).Trim();
                             if (!subConfigs.ContainsKey(currentSubConfigName))
                             {
-                                LogError("Unknown sub config: " + currentSubConfigName);
-                                // Optionally, auto-register a new sub config:
-                                subConfigs[currentSubConfigName] = new ConfigFile(pb, program);
+                                Logger("Unknown sub config: " + currentSubConfigName);
+                                return false;
                             }
                             if (!subConfigBlocks.ContainsKey(currentSubConfigName))
                             {
@@ -609,7 +1000,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                         // Indented line: should belong to an active sub config.
                         if (currentSubConfigName == null)
                         {
-                            LogError("Unexpected indentation without an active sub config header: " + line);
+                            Logger("Unexpected indentation without an active sub config header: " + line);
+                            return false;
                         }
                         else
                         {
@@ -623,7 +1015,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                             }
                             else if (indent != expectedIndent)
                             {
-                                LogError($"Inconsistent indentation for sub config '{currentSubConfigName}'. Expected {expectedIndent} spaces but found {indent} spaces in line: {line}");
+                                Logger($"Inconsistent indentation for sub config '{currentSubConfigName}'. Expected {expectedIndent} spaces but found {indent} spaces in line: {line}");
+                                return false;
                             }
 
                             if (line.Length >= expectedIndent)
@@ -633,7 +1026,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                             }
                             else
                             {
-                                LogError("Line is indented but too short relative to the expected indent: " + line);
+                                Logger("Line is indented but too short relative to the expected indent: " + line);
+                                return false;
                             }
                         }
                     }
@@ -647,29 +1041,29 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     int colonIndex = trimmed.IndexOf(':');
                     if (colonIndex < 0)
                     {
-                        LogError($"Syntax error in root property (missing ':'): {line}");
-                        continue;
+                        Logger($"Syntax error in root property (missing ':'): {line}");
+                        return false;
                     }
                     string key = trimmed.Substring(0, colonIndex).Trim();
                     string valuePart = trimmed.Substring(colonIndex + 1).Trim();
                     if (encounteredRoot.Contains(key))
                     {
-                        LogError($"Duplicate root property: {key}");
-                        continue;
+                        Logger($"Duplicate root property: {key}");
+                        return false;
                     }
                     encounteredRoot.Add(key);
 
                     if (!properties.ContainsKey(key))
                     {
-                        LogError($"Unknown root property: {key}");
-                        continue;
+                        Logger($"Unknown root property: {key}");
+                        return false;
                     }
                     var prop = properties[key];
                     object parsedValue;
                     if (!ParseValue(key, valuePart, prop.ValueType, out parsedValue))
                     {
-                        LogError($"Failed to parse root property '{key}' with value '{valuePart}'");
-                        continue;
+                        Logger($"Failed to parse root property '{key}' with value '{valuePart}'");
+                        return false;
                     }
                     prop.Value = parsedValue;
                 }
@@ -682,11 +1076,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     var subConfig = subConfigs[subName];
                     if (!subConfig.ParseConfig(subText))
                     {
-                        LogError($"Errors in sub config '{subName}':");
-                        foreach (var err in subConfig.ErrorLog)
-                        {
-                            LogError("  " + err);
-                        }
+                        Logger($"Errors in sub config '{subName}':");
+                        return false;
                     }
                 }
 
@@ -695,21 +1086,15 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 {
                     if (!encounteredRoot.Contains(kvp.Key))
                     {
-                        LogError($"Missing root property: {kvp.Key}. Using default value.");
+                        Logger($"Missing root property: {kvp.Key}. Using default value.");
                         kvp.Value.Value = kvp.Value.DefaultValue;
+                        return false;
                     }
                 }
 
                 // Update the stored config text if no errors occurred.
-                if (ErrorLog.Count == 0)
-                {
-                    this.configText = configText;
-                    return true;
-                }
-                else
-                {
-                    return false;
-                }
+                this.configText = configText;
+                return true;
             }
 
             /// <summary>
@@ -718,11 +1103,11 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// </summary>
             public T Get<T>(string key)
             {
-                EnsureFinalized();
+                if (!EnsureFinalized()) return default(T);
 
                 if (!properties.ContainsKey(key))
                 {
-                    LogError("Unknown property requested: " + key);
+                    Logger("Unknown property requested: " + key);
                     return default(T);
                 }
                 try
@@ -731,7 +1116,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 }
                 catch
                 {
-                    LogError("Type mismatch for property: " + key);
+                    Logger("Type mismatch for property: " + key);
                     return default(T);
                 }
             }
@@ -740,18 +1125,19 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// Retrieves a sub configuration instance.
             /// Returns null if the sub config is not registered.
             /// </summary>
+            /// <param name="name">A sub config instance. Null if failed to get sub config.</param>
             public ConfigFile GetSubConfig(string name)
             {
-                EnsureFinalized();
+                if (!EnsureFinalized()) return null;
 
                 if (!subConfigs.ContainsKey(name))
                 {
-                    LogError("Unknown sub config requested: " + name);
+                    Logger("Unknown sub config requested: " + name);
                     return null;
                 }
                 return subConfigs[name];
             }
-    
+
             /// <summary>
             /// Gets a reference to a sub configuration by name.
             /// Can be called before finalization.
@@ -761,7 +1147,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             {
                 if (!subConfigs.ContainsKey(name))
                 {
-                    LogError("Unknown sub config requested: " + name);
+                    Logger("Unknown sub config requested: " + name);
                     return null;
                 }
                 return subConfigs[name];
@@ -771,25 +1157,28 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// Checks the programmable block's CustomData.
             /// If empty, writes the default config.
             /// </summary>
-            public void CheckAndWriteDefaults()
+            /// <returns>True if the config was written or already present.</returns>
+            public bool CheckAndWriteDefaults()
             {
-                EnsureFinalized();
+                if (!EnsureFinalized()) return false;
 
                 if (string.IsNullOrWhiteSpace(pb.CustomData))
                 {
                     string defaultConfig = GenerateDefaultConfigText();
                     pb.CustomData = defaultConfig;
-                    program.Echo("No configuration data found. Default config added to Custom Data.");
+                    Logger("No configuration data found. Default config added to Custom Data.");
+                    // going to return true anyway since we wrote the default config
                 }
+                return true;
             }
 
             /// <summary>
             /// Checks if the CustomData has changed since the last parse, and if so, re-parses it.
-            /// Any errors are output using the program's Echo method.
             /// </summary>
+            /// <returns>True if the config was re-parsed.</returns>
             public bool CheckAndReparse()
             {
-                EnsureFinalized();
+                if (!EnsureFinalized()) return false;
 
                 if (string.IsNullOrWhiteSpace(pb.CustomData))
                     return false;
@@ -798,10 +1187,6 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 {
                     if (!ParseConfig(pb.CustomData))
                     {
-                        foreach (var error in ErrorLog)
-                        {
-                            program.Echo(error);
-                        }
                         return false;
                     }
                     configText = pb.CustomData;
@@ -1284,199 +1669,60 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         /* ^ ArgParser API                                                          ^ */
         /* ^ ---------------------------------------------------------------------- ^ */
 
-        /* v ---------------------------------------------------------------------- v */ 
-        /* v RefAxes Transformations                                               v */ 
         /* v ---------------------------------------------------------------------- v */
-        public class RefAxes {
-            public MatrixD worldRef;
-            public MatrixD localRef;
-            public MatrixD localHome;
-            public IMyCubeGrid refGrid;
-            public Vector3I indexOffset;
-            public Quaternion orientOffset;
-
-            // Set local rotations constants
-            public MatrixD ROT_PLUS_90_X = MatrixD.CreateRotationX(Math.PI / 2);
-            public MatrixD ROT_MINUS_90_X = MatrixD.CreateRotationX(-Math.PI / 2);
-            public MatrixD ROT_PLUS_90_Y = MatrixD.CreateRotationY(Math.PI / 2);
-            public MatrixD ROT_MINUS_90_Y = MatrixD.CreateRotationY(-Math.PI / 2);
-            public MatrixD ROT_PLUS_90_Z = MatrixD.CreateRotationZ(Math.PI / 2);
-            public MatrixD ROT_MINUS_90_Z = MatrixD.CreateRotationZ(-Math.PI / 2);
-
-            public RefAxes(IMyCubeGrid grid) {
-                refGrid = grid;
-                worldRef = grid.WorldMatrix;
-                localRef = MatrixD.Identity;
-                localHome = MatrixD.Identity;
-                indexOffset = Vector3I.Zero;
-                orientOffset = Quaternion.Identity;
-            }
-
-            public Vector3D TransformLocalToWorldVector(Vector3I dirIndexVect) {
-                Vector3D fromPoint = refGrid.GridIntegerToWorld(indexOffset);
-                Vector3D toPoint   = refGrid.GridIntegerToWorld(indexOffset - Vector3I.Transform(dirIndexVect, orientOffset));
-                return fromPoint - toPoint;
-            }
-
-            public Vector3D GetWorldUp() {
-                Vector3I up3I = new Vector3I(localRef.Up);
-                return TransformLocalToWorldVector(up3I);
-            }
-
-            public Vector3D GetWorldForward() {
-                Vector3I forward3I = new Vector3I(localRef.Forward);
-                return TransformLocalToWorldVector(forward3I);
-            }
-
-            public void RotateAzimuth(int direction) {
-                if (direction > 0) {
-                    localRef *= ROT_PLUS_90_Y;
-                } else {
-                    localRef *= ROT_MINUS_90_Y;
-                }
-                UpdateWorldRef();
-            }
-
-            public void RotateElevation(int direction) {
-                if (direction > 0) {
-                    localRef *= ROT_PLUS_90_X;
-                } else {
-                    localRef *= ROT_MINUS_90_X;
-                }
-                UpdateWorldRef();
-            }
-
-            public void RotateRoll(int direction) {
-                if (direction > 0) {
-                    localRef *= ROT_PLUS_90_Z;
-                } else {
-                    localRef *= ROT_MINUS_90_Z;
-                }
-                UpdateWorldRef();
-            }
-
-            public void ResetHomeOrientation() {
-                localRef = MatrixD.Identity;
-                UpdateWorldRef();
-            }
-
-            public void SetHomeOrientation() {
-                localHome = localRef;
-                UpdateWorldRef();
-            }
-
-            public void GoToHomeOrientation() {
-                localRef = localHome;
-                UpdateWorldRef();
-            }
-
-            public void UpdateWorldRef() {
-                Vector3 worldUp = GetWorldUp();
-                Vector3 worldForward = GetWorldForward();
-                worldRef = MatrixD.CreateWorld(refGrid.GridIntegerToWorld(indexOffset), worldForward, worldUp);
-            }
-
-        }
-        /* ^ ---------------------------------------------------------------------- ^ */ 
-        /* ^ RefAxes Transformations                                               ^ */ 
-        /* ^ ---------------------------------------------------------------------- ^ */
-
-        /* v ---------------------------------------------------------------------- v */ 
-        /* v Grid Inspection Utilities                                              v */ 
+        /* v Grid Orientation Controller                                            v */
         /* v ---------------------------------------------------------------------- v */
-        public static IMyShipConnector FindTargetRefBlock(MyGridProgram program) {
-            // Get all connectors on the grid
-            List<IMyShipConnector> connectors = new List<IMyShipConnector>();
-            program.GridTerminalSystem.GetBlocksOfType(connectors);
-
-            // Loop through the connectors to find one that is locked to a static grid
-            foreach (var connector in connectors) {
-                if (connector.CubeGrid == program.Me.CubeGrid && connector.Status == MyShipConnectorStatus.Connected) {
-                    var otherConnector = connector.OtherConnector;
-                    if (otherConnector != null && otherConnector.CubeGrid.IsStatic) {
-                        logger.Info("Found ref connector: " + connector.CustomName);
-                        return otherConnector;
-                    }
-                }
-            }
-            logger.Error("Ship must be connected to a static grid.");
-            return null;
-        }
-
-        // Find ship ref block (remote control)
-        public static IMyRemoteControl FindShipRefBlock(MyGridProgram program) {
-            List<IMyRemoteControl> remotes = new List<IMyRemoteControl>();
-            program.GridTerminalSystem.GetBlocksOfType(remotes);
-            var shipRefBlock = remotes.FirstOrDefault(r => r.CubeGrid == program.Me.CubeGrid);
-            if (shipRefBlock == null) {
-                logger.Error("No ship reference block found.");
-                return null;
-            }
-            logger.Info("Found ship reference block: " + shipRefBlock.CustomName);
-            return shipRefBlock;
-        }
-
-        public bool SetReferenceGrid(MyGridProgram program) {
-            IMyShipConnector temp = FindTargetRefBlock(this);
-            if (temp == null) {
-                logger.Error("No target reference block found.");
-                return false;
-            }
-            gridRefBlock = temp;
-            logger.Info("Reference grid set to " + gridRefBlock.CubeGrid.CustomName + ".");
-            return true;
-        }
-
-        public bool IsInitialized() {
-            return (shipRefBlock != null && gridRefBlock != null && refAxes != null);
-        }
-        /* ^ ---------------------------------------------------------------------- ^ */ 
-        /* ^ Grid Inspection Utilities                                              ^ */ 
-        /* ^ ---------------------------------------------------------------------- ^ */
-
+        // TODO: Update
         public class GridOrient: {
+            public GridContext context;
             public List<IMyGyro> gyros;
             public bool running, orienting;
-            public ArgParser argParser = new ArgParser();
-            public UpdateFrequency updateFrequency;
-            public UpdateType updateType;
+            public ArgParser argParser;
             public ConfigFile config;
+            public double errorAngle;
+            public long lastGridId;
 
             // Constructor
-            public GridOrient(MyGridProgram program) {
-                GetMyGyros(program);
+            public GridOrient(GridContext gridContext) {
+                this.context = context;
+                this.lastGridId = long.MinValue;
+                // Find ship gyros
+                GetMyGyros();
+                // Register the config file
+                RegisterConfig();
+                // Register the argument parser
+                RegisterCommands();
             }
 
-            /* v Configuration Handling -------------------------------------------- v */
-            public RegisterConfig(ConfigFile rootConfig) {
-                rootConfig.RegisterSubConfig("GridOrient");
-                rootConfig.RegisterProperty("GridOrient","Kp", ConfigValueType.Float, 0.5f);
-                rootConfig.RegisterProperty("GridOrient","tolerance", ConfigValueType.Float, 0.05f);
-                config = rootConfig.GetSubConfigRef("GridOrient");
+            /* v Configuration Handling ------------------------------------------- v */
+            public void RegisterConfig() {
+                context.config.RegisterSubConfig("GridOrient");
+                context.config.RegisterProperty("GridOrient","Kp", ConfigValueType.Float, 0.5f);
+                context.config.RegisterProperty("GridOrient","tolerance", ConfigValueType.Float, 0.05f);
+                config = context.config.GetSubConfigRef("GridOrient");
+                
             }
-            /* ^ Configuration Handling -------------------------------------------- ^ */
 
-            /* v Gyro Initialization ------------------------------------------------ v */
-            public void GetMyGyros(MyGridProgram program) {
+            /* v Gyro Initialization ---------------------------------------------- v */
+            public void GetMyGyros() {
                 List<IMyGyro> allGyros = new List<IMyGyro>();
-                program.GridTerminalSystem.GetBlocksOfType(allGyros);
-                gyros = allGyros.Where(g => g.CubeGrid == program.Me.CubeGrid).ToList();
+                context.program.GridTerminalSystem.GetBlocksOfType(allGyros);
+                gyros = allGyros.Where(g => g.CubeGrid == context.program.Me.CubeGrid).ToList();
                 if (gyros.Count == 0) {
-                    logger.Error("No gyros found on the grid.");
+                    context.logger.Error("No gyros found on the grid.");
                 } else {
-                    logger.Info("Found " + gyros.Count + " gyros on the grid.");
+                    context.logger.Info("Found " + gyros.Count + " gyros on the grid.");
                 }
             }
-            /* ^ Gyro Initialization ------------------------------------------------ ^ */
 
-            /* v Auto Orientation -------------------------------------------------- v */ 
+            /* v Auto Orientation ------------------------------------------------- v */ 
             // Alignment function that computes the rotation error and applies gyro overrides.
             // Returns the angle error in radians.
-            public double ApplyOrientationUpdate(IMyTerminalBlock shipBlock, IMyTerminalBlock targetBlock, List<IMyGyro> gyros, double Kp = 1.0)
+            public double ApplyOrientationUpdate()
             {
                 // Get ship and target orientations in world coords
-                MatrixD shipMatrix = Me.CubeGrid.WorldMatrix;
-                MatrixD targetMatrix = refAxes.worldRef;
+                MatrixD shipMatrix = context.shipRefBlock.CubeGrid.WorldMatrix;
+                MatrixD targetMatrix = context.refAxes.worldRef;
                 
                 // Compute the relative rotation matrix (the error rotation from ship to target).
                 MatrixD relativeMatrix = targetMatrix * MatrixD.Transpose(shipMatrix);
@@ -1493,6 +1739,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 }
                 
                 // Convert rotationAngle from radians to degrees for gyro override inputs.
+                Kp = ConfigFile.Get<float>("Kp");
                 double overrideValue = Kp * rotationAngle * (180.0 / Math.PI);
                 
                 // For each gyro, transform the error (rotation axis) from world space to the gyro's local space.
@@ -1516,10 +1763,10 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             public void StartActiveOrientation() {
                 // Set update frequency if not already running the control loop.
                 if (!orienting) {
-                    updateFrequency = SAMPLE_RATE;
-                    updateType = SAMPLE_TYPE;
+                    updateFrequency = context.state.SAMPLE_FREQUENCY;
+                    updateType = context.state.SAMPLE_TYPE;
                     orienting = true;
-                    logger.Info("Reorienting to " + gridRefBlock.CubeGrid.CustomName + ".");
+                    context.logger.Info("Reorienting to " + context.gridRefBlock.CubeGrid.CustomName + ".");
                 }
             }
 
@@ -1532,14 +1779,15 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     gyro.SetValueFloat("Yaw", 0f);
                     gyro.SetValueFloat("Roll", 0f);
                 }
-                updateFrequency = CHECK_RATE;
-                updateType = CHECK_TYPE;
+                updateFrequency = context.state.CHECK_FREQUENCY;
+                updateType = context.state.CHECK_TYPE;
                 orienting = false;
-                logger.Info("Orientation complete.");
+                context.logger.Info("Orientation complete.");
             }
 
             // Turn off Auto-orientation
             public void StopGridAutoOrientation() {
+                lastGridId = context.refAxes.gridId;
                 if (!running) {
                     // if we're not running, just return.
                     return;
@@ -1551,25 +1799,21 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     gyro.SetValueFloat("Roll", 0f);
                     gyro.SetValueFloat("Power", 1.0f);
                 }
-                updateFrequency = STOP_RATE;
-                updateType = STOP_TYPE;
+                updateFrequency = context.state.STOP_FREQUENCY;
+                updateType = context.state.STOP_TYPE;
                 orienting = false;
                 running = false;
-                logger.Info("Auto-orientation OFF.");
+                context.logger.Info("Auto-orientation OFF.");
             }
 
             // Turn on Auto-orientation
             public void StartGridAutoOrientation() {
+                lastGridId = context.refAxes.gridId;
                 if (running) {
                     // If we're already running, just return.
                     return;
                 }
-                // Reparse the config file to ensure we have the latest values.
-                if (!ConfigFile.CheckAndReparse(Me, this)) {
-                    logger.Error("Configuration parsing failed. Please fix the errors and run again.");
-                    return;
-                }
-                updateFrequency = CHECK_RATE;
+                updateFrequency = context.state.CHECK_FREQUENCY;
                 orienting = false;
                 running = true;
                 // Enable gyro overrides for all gyros on the grid.
@@ -1577,44 +1821,50 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     gyro.SetValueBool("Override", true);
                     gyro.SetValueFloat("Power", 1.0f);
                 }            
-                logger.Info("Auto-orientation ON.");
+                context.logger.Info("Auto-orientation ON.");
             }
 
             // Perform the grid auto-orientation
-            public void PerformAutoOrientation(UpdateType updateSource) {
+            public void PerformAutoOrientation() {
+                // If reference grid changed, stop grid auto-orientation.
+                if (context.refAxes.gridId != lastGridId) {
+                    StopGridAutoOrientation();
+                    return;
+                }
+                
                 // if we're not running, just return.
                 if (!running) {
                     return;
                 }
+                
                 // If update type doesn't match our current update frequency, return
-                if ((updateSource & updateType) == 0) {
+                if ((context.state.updateType & updateType) == 0) {
                     return;
                 }
+
+                // check for config changes on any check type update
+                if (context.configUpdated) {
+                    config = context.config.GetSubConfigRef("GridOrient");
+                }
+
                 // Call the alignment function to update gyro overrides.    
-                double errorAngle = ApplyOrientationUpdate(shipRefBlock, gridRefBlock, gyros, ConfigFile.Get<float>("Kp"));
+                errorAngle = ApplyOrientationUpdate();
                 
-                logger.Info("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
+                context.logger.Info("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
 
                 if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("tolerance")) {
                     StopActiveOrientation();
                 } else if (!orienting && Math.Abs(errorAngle) > ConfigFile.Get<float>("tolerance")) {
                     StartActiveOrientation();
-                } else {
-                    // Re-parse in case of changes in Custom Data.
-                    // we'll only do this in the slow update for performance reasons.
-                    if (!ConfigFile.CheckAndReparse(Me, this)) {
-                        logger.Error("Configuration parsing failed. Please fix the errors and run again.");
-                        return;
-                    }
                 }
             }
-            /* ^ Auto Orientation -------------------------------------------------- ^ */ 
 
-            /* v Command Handling -------------------------------------------------- v */
+            /* v Command Handling ------------------------------------------------- v */
             /// <summary>
             /// Registers command line arguments for orientation control.
             /// </summary>
             public void RegisterCommands() {
+                argParser = new ArgParser();
                 argParser.RegisterArg("orient", typeof(bool), false, false); // Turns auto-orientation on/off
                 argParser.RegisterArg("az", typeof(int), false, false); // Azimuth rotation
                 argParser.RegisterArg("el", typeof(int), false, false); // Elevation rotation
@@ -1631,7 +1881,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// <param name="val">True to start auto-orientation, false to stop.</param>
             public void Orient(bool val) {
                 if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
-                    logger.Error("No reference grid set. Cannot start auto orientation.");
+                    context.logger.Error("No reference grid set. Cannot start auto orientation.");
                     return;
                 }
                 if (val) {
@@ -1643,40 +1893,19 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
 
             /// <summary>
-            /// Handles initializing/reinitializing the reference grid used for orientation alignment.
-            /// </summary>
-            public void Init(bool val) {
-                if (!val) {
-                    return;
-                }
-                // stop the current orientation process if running
-                if (IsInitialized() && gyros != null && gyros.Count != 0) {
-                    StopGridAutoOrientation();
-                }
-                StopGridAutoOrientation();
-                // Set reference grid
-                if (!SetReferenceGrid(this)) {
-                    logger.Error("Failed to set reference grid.");
-                    return;
-                }
-                // Initialize reference axes
-                refAxes = new RefAxes(gridRefBlock.CubeGrid);            
-            }
-
-            /// <summary>
             /// Handles the azimuth rotation command.
             /// </summary>
             /// <param name="direction">Direction of rotation: +1 or -1.</param>
             public void AzimuthRotate(int direction) {
-                if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
-                    logger.Error("No reference grid set. Cannot rotate.");
+                if (!(context.HasReferenceGrid() && gyros != null && gyros.Count != 0)) {
+                    context.logger.Error("No reference grid set. Cannot rotate.");
                     return;
                 }
                 if (direction != 1 && direction != -1) {
-                    logger.Error("Invalid azimuth direction. Must be +1 or -1.");
+                    context.logger.Error("Invalid azimuth direction. Must be +1 or -1.");
                     return;
                 }
-                refAxes.RotateAzimuth(direction);
+                context.refAxes.RotateAzimuth(direction);
             }
 
             /// <summary>
@@ -1684,15 +1913,15 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// </summary>
             /// <param name="direction">Direction of rotation: +1 or -1.</param>
             public void ElevationRotate(int direction) {
-                if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
-                    logger.Error("No reference grid set. Cannot rotate.");
+                if (!(context.HasReferenceGrid() && gyros != null && gyros.Count != 0)) {
+                    context.logger.Error("No reference grid set. Cannot rotate.");
                     return;
                 }
                 if (direction != 1 && direction != -1) {
-                    logger.Error("Invalid elevation direction. Must be +1 or -1.");
+                    context.logger.Error("Invalid elevation direction. Must be +1 or -1.");
                     return;
                 }
-                refAxes.RotateElevation(direction);
+                context.refAxes.RotateElevation(direction);
             }
 
             /// <summary>
@@ -1701,47 +1930,47 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// <param name="direction">Direction of rotation: +1 or -1.</param>
             /// </summary>
             public void RollRotate(int direction) {
-                if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
-                    logger.Error("No reference grid set. Cannot rotate.");
+                if (!(context.HasReferenceGrid() && gyros != null && gyros.Count != 0)) {
+                    context.logger.Error("No reference grid set. Cannot rotate.");
                     return;
                 }
                 if (direction != 1 && direction != -1) {
-                    logger.Error("Invalid roll direction. Must be +1 or -1.");
+                    context.logger.Error("Invalid roll direction. Must be +1 or -1.");
                     return;
                 }
-                refAxes.RotateRoll(direction);
+                context.refAxes.RotateRoll(direction);
             }
             /// <summary>
             /// Handles the set-home command.
             /// </summary>
             public void SetHome() {
-                if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
-                    logger.Error("No reference grid set. Cannot set home orientation.");
+                if (!(context.HasReferenceGrid() && gyros != null && gyros.Count != 0)) {
+                    context.logger.Error("No reference grid set. Cannot set home orientation.");
                     return;
                 }
-                refAxes.SetHomeOrientation();
+                context.refAxes.SetHomeOrientation();
             }
 
             /// <summary>
             /// Handles the home command.
             /// </summary>
             public void GoHome() {
-                if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
-                    logger.Error("No reference grid set. Cannot go to home orientation.");
+                if (!(context.HasReferenceGrid() && gyros != null && gyros.Count != 0)) {
+                    context.logger.Error("No reference grid set. Cannot go to home orientation.");
                     return;
                 }
-                refAxes.GoToHomeOrientation();
+                context.refAxes.GoToHomeOrientation();
             }
 
             /// <summary>
             /// Handles the reset-home command.
             /// </summary>
             public void ResetHome() {
-                if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
-                    logger.Error("No reference grid set. Cannot reset home orientation.");
+                if (!(context.HasReferenceGrid() && gyros != null && gyros.Count != 0)) {
+                    context.logger.Error("No reference grid set. Cannot reset home orientation.");
                     return;
                 }
-                refAxes.ResetHomeOrientation();
+                context.refAxes.ResetHomeOrientation();
             }
             
             /// <summary>
@@ -1779,89 +2008,71 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                             ResetHome();
                             break;
                         default:
-                            logger.Error("Unknown GridOrient argument: " + kvp.Key);
+                            context.logger.Error("Unknown GridOrient argument: " + kvp.Key);
                             break;
                     }
                 }
                     return;
             }
-            /* ^ Command Handling -------------------------------------------------- ^ */ 
         }
-        // Create an instance of Logger.
-        public static Logger logger;
-        public ConfigFile config;
+        /* ------------------------------------------------------------------------ ^ */
+        /* ^ Grid Orientation Controller                                            ^ */
+        /* ^ ---------------------------------------------------------------------- ^ */
+
+        public GridContext gridContext;  
         public GridOrient gridOrient;
+        public ArgParser argParser;
 
         public Program() {
-            // Initialize the logger, enabling all output types.
-            logger = new Logger(this)
-            {
-                UseEchoFallback = true,    // Fallback to program.Echo if no LCDs are available.
-                LogToCustomData = false    // Disable logging to CustomData.
-            };
-
+            // Create a new grid context
+            gridContext = new GridContext(this);
             // Initialize grid auto-orientation system
-            gridOrient = new GridOrient(this);
-
-            // Initialize config
-            config = new ConfigFile(Me, this);
-            gridOrient.RegisterConfig(config);
-            config.Logger = logger.Error;
-            config.FinalizeRegistration();
+            gridOrient = new GridOrient(gridContext);            
 
             // Initialize argument parser
-            argParser.RegisterCommand("init"); // Updates the reference grid
-            argParser.RegisterCommand("grid-orient"); // for commands sent to the GridOrient class
-
-            // Initialize the program
-            Runtime.UpdateFrequency = STOP_RATE;
-            gridRefBlock = null;
-            refAxes = null;
-            running = false;
-            orienting = false;    
-            shipRefBlock = FindShipRefBlock(this);
-            if (shipRefBlock == null) {
-                return;
-            }
+            argParser = new ArgParser();
+            argParser.RegisterCommand("grid"); // for reference grid commands
+            argParser.RegisterCommand("orient"); // for commands sent to the GridOrient class
         }
 
         public void Main(string args, UpdateType updateSource) {
-            // Parse the input argument string.
+            // Do pre-Main bookkeeping tasks
+            gridContext.PreMain();
+            
+            // Parse and handle command line arguments.
             if (!argParser.Parse(args))
             {
                 // Output errors if parsing fails.
                 foreach (string error in argParser.Errors)
                 {
-                    logger.Error("Error: " + error);
+                    gridContext.logger.Error("Error: " + error);
                 }
                 return;
             }
 
-            // Iterate over parsed arguments using the iterator and a switch statement.
             foreach (var kvp in argParser.GetParsedArgs())
             {
                 switch (kvp.Key)
                 {
-                    case "init": // no "--" for commands
-                        bool initval = true;
-                        Init(initval);
+                    case "grid": // no "--" for commands
+                        string grid_args = (string)kvp.Value;
+                        gridContext.HandleCommand(grid_args);                        
                         break;
-                    case "grid-orient": // no "--" for commands
+                    case "orient": // no "--" for commands
                         string orient_args = (string)kvp.Value;
                         gridOrient.HandleCommand(orient_args);
                         break;
                     default:
-                        logger.Error("Unknown argument or command: " + kvp.Key);
+                        gridContext.logger.Error("Unknown argument or command: " + kvp.Key);
                         break;
                 }
-            }
+            }            
 
             // Perform control inputs
             PerformAutoOrientation();
 
-
-            // Update Runtime sample rate
-            Runtime.UpdateFrequency = gridOrient.updateFrequency;            
+            // Do post-Main tasks
+            gridContext.PostMain();      
         }
 
 #region PreludeFooter

@@ -42,9 +42,6 @@ public class ConfigFile
     // Internal flag to indicate that registration has been finalized.
     private bool isFinalized = false;
 
-    // Error log for the last parse or API call.
-    public List<string> ErrorLog { get; private set; } = new List<string>();
-
     // A logging delegate which scripts can set to route errors as they wish.
     // By default, it is set to a no‑op.
     public Action<string> Logger { get; set; } = message => { };
@@ -59,21 +56,16 @@ public class ConfigFile
     }
 
     /// <summary>
-    /// Logs an error by adding it to the ErrorLog and calling the Logger.
-    /// </summary>
-    private void LogError(string message)
-    {
-        ErrorLog.Add(message);
-        Logger(message);
-    }
-
-    /// <summary>
     /// Checks that this instance has been finalized; if not, throws an exception.
     /// </summary>
-    private void EnsureFinalized()
+    /// <returns>True if finalized, false otherwise.</returns>
+    private bool EnsureFinalized()
     {
-        if (!isFinalized)
-            throw new Exception("Configuration file has not been finalized. Call FinalizeRegistration() before using the config.");
+        if (!isFinalized) {
+            Logger("Configuration file has not been finalized. Call FinalizeRegistration() before using the config.");
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -83,12 +75,12 @@ public class ConfigFile
     {
         if (isFinalized)
         {
-            LogError("Cannot register new property after finalization: " + name);
+            Logger("Cannot register new property after finalization: " + name);
             return;
         }
         if (properties.ContainsKey(name))
         {
-            LogError("Property already registered: " + name);
+            Logger("Property already registered: " + name);
             return;
         }
         properties[name] = new ConfigProperty
@@ -108,12 +100,12 @@ public class ConfigFile
     {
         if (isFinalized)
         {
-            LogError("Cannot register new property after finalization: " + subConfigName + "/" + name);
+            Logger("Cannot register new property after finalization: " + subConfigName + "/" + name);
             return;
         }
         if (!subConfigs.ContainsKey(subConfigName))
         {
-            LogError("Sub config '" + subConfigName + "' does not exist. Register the sub config first.");
+            Logger("Sub config '" + subConfigName + "' does not exist. Register the sub config first.");
             return;
         }
         // Forward the registration to the sub config.
@@ -128,12 +120,12 @@ public class ConfigFile
     {
         if (isFinalized)
         {
-            LogError("Cannot register new sub config after finalization: " + name);
+            Logger("Cannot register new sub config after finalization: " + name);
             return;
         }
         if (subConfigs.ContainsKey(name))
         {
-            LogError("Sub config already registered: " + name);
+            Logger("Sub config already registered: " + name);
             return;
         }
         // Create a new sub config with the same programmable block and program.
@@ -145,12 +137,13 @@ public class ConfigFile
     /// This checks that every registered sub config contains at least one property.
     /// It then marks the config file as ready for use and writes default config if necessary.
     /// </summary>
-    public void FinalizeRegistration()
+    /// 
+    public bool FinalizeRegistration()
     {
         if (isFinalized)
         {
-            LogError("Configuration file already finalized.");
-            return;
+            Logger("Configuration file already finalized.");
+            return false;
         }
 
         // Finalize all sub configs first.
@@ -158,29 +151,37 @@ public class ConfigFile
         {
             ConfigFile subCfg = kvp.Value;
             // Finalize sub config registrations recursively.
-            subCfg.FinalizeRegistration();
+            if (!subCfg.FinalizeRegistration());
+            {
+                Logger($"Failed to finalize sub config '{kvp.Key}'.");
+                return false;
+            }
             // Ensure the sub config has at least one property or sub config.
             if (subCfg.properties.Count == 0 && subCfg.subConfigs.Count == 0)
             {
-                LogError($"Sub config '{kvp.Key}' is empty. It must contain at least one property.");
+                Logger($"Sub config '{kvp.Key}' is empty. It must contain at least one property.");
+                return false;
             }
         }
 
-        if (ErrorLog.Count > 0)
-            throw new Exception("Configuration registration finalization failed. Check ErrorLog for details.");
-
         isFinalized = true;
         // Write default config to CustomData if needed.
-        CheckAndWriteDefaults();
+        if(!CheckAndWriteDefaults())
+        {
+            Logger("Failed to write default config to CustomData.");
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
     /// Generates the default CAML config text, including both root properties and sub configurations.
     /// Sub config blocks are indented using their own default indent (typically detected at parse time).
     /// </summary>
+    /// <returns>The generated config text. Null if we failed to generate.</returns>
     public string GenerateDefaultConfigText()
     {
-        EnsureFinalized();
+        if (!EnsureFinalized()) return null;
 
         StringBuilder sb = new StringBuilder();
         // Output root-level properties.
@@ -210,13 +211,11 @@ public class ConfigFile
     /// <summary>
     /// Parses a CAML configuration string.
     /// Supports root-level properties and one level of sub configs with dynamic indent detection.
-    /// Returns true if no errors occurred; errors are available via ErrorLog.
+    /// Returns true if no errors occurred;
     /// </summary>
     public bool ParseConfig(string configText)
     {
-        EnsureFinalized();
-        // Clear errors for this parse run.
-        ErrorLog.Clear();
+        if (!EnsureFinalized()) return false;
 
         // Split the text into lines.
         var lines = configText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
@@ -248,9 +247,8 @@ public class ConfigFile
                     currentSubConfigName = trimmed.Substring(0, colonIndex).Trim();
                     if (!subConfigs.ContainsKey(currentSubConfigName))
                     {
-                        LogError("Unknown sub config: " + currentSubConfigName);
-                        // Optionally, auto-register a new sub config:
-                        subConfigs[currentSubConfigName] = new ConfigFile(pb, program);
+                        Logger("Unknown sub config: " + currentSubConfigName);
+                        return false;
                     }
                     if (!subConfigBlocks.ContainsKey(currentSubConfigName))
                     {
@@ -272,7 +270,8 @@ public class ConfigFile
                 // Indented line: should belong to an active sub config.
                 if (currentSubConfigName == null)
                 {
-                    LogError("Unexpected indentation without an active sub config header: " + line);
+                    Logger("Unexpected indentation without an active sub config header: " + line);
+                    return false;
                 }
                 else
                 {
@@ -286,7 +285,8 @@ public class ConfigFile
                     }
                     else if (indent != expectedIndent)
                     {
-                        LogError($"Inconsistent indentation for sub config '{currentSubConfigName}'. Expected {expectedIndent} spaces but found {indent} spaces in line: {line}");
+                        Logger($"Inconsistent indentation for sub config '{currentSubConfigName}'. Expected {expectedIndent} spaces but found {indent} spaces in line: {line}");
+                        return false;
                     }
 
                     if (line.Length >= expectedIndent)
@@ -296,7 +296,8 @@ public class ConfigFile
                     }
                     else
                     {
-                        LogError("Line is indented but too short relative to the expected indent: " + line);
+                        Logger("Line is indented but too short relative to the expected indent: " + line);
+                        return false;
                     }
                 }
             }
@@ -310,29 +311,29 @@ public class ConfigFile
             int colonIndex = trimmed.IndexOf(':');
             if (colonIndex < 0)
             {
-                LogError($"Syntax error in root property (missing ':'): {line}");
-                continue;
+                Logger($"Syntax error in root property (missing ':'): {line}");
+                return false;
             }
             string key = trimmed.Substring(0, colonIndex).Trim();
             string valuePart = trimmed.Substring(colonIndex + 1).Trim();
             if (encounteredRoot.Contains(key))
             {
-                LogError($"Duplicate root property: {key}");
-                continue;
+                Logger($"Duplicate root property: {key}");
+                return false;
             }
             encounteredRoot.Add(key);
 
             if (!properties.ContainsKey(key))
             {
-                LogError($"Unknown root property: {key}");
-                continue;
+                Logger($"Unknown root property: {key}");
+                return false;
             }
             var prop = properties[key];
             object parsedValue;
             if (!ParseValue(key, valuePart, prop.ValueType, out parsedValue))
             {
-                LogError($"Failed to parse root property '{key}' with value '{valuePart}'");
-                continue;
+                Logger($"Failed to parse root property '{key}' with value '{valuePart}'");
+                return false;
             }
             prop.Value = parsedValue;
         }
@@ -345,11 +346,8 @@ public class ConfigFile
             var subConfig = subConfigs[subName];
             if (!subConfig.ParseConfig(subText))
             {
-                LogError($"Errors in sub config '{subName}':");
-                foreach (var err in subConfig.ErrorLog)
-                {
-                    LogError("  " + err);
-                }
+                Logger($"Errors in sub config '{subName}':");
+                return false;
             }
         }
 
@@ -358,21 +356,15 @@ public class ConfigFile
         {
             if (!encounteredRoot.Contains(kvp.Key))
             {
-                LogError($"Missing root property: {kvp.Key}. Using default value.");
+                Logger($"Missing root property: {kvp.Key}. Using default value.");
                 kvp.Value.Value = kvp.Value.DefaultValue;
+                return false;
             }
         }
 
         // Update the stored config text if no errors occurred.
-        if (ErrorLog.Count == 0)
-        {
-            this.configText = configText;
-            return true;
-        }
-        else
-        {
-            return false;
-        }
+        this.configText = configText;
+        return true;
     }
 
     /// <summary>
@@ -381,11 +373,11 @@ public class ConfigFile
     /// </summary>
     public T Get<T>(string key)
     {
-        EnsureFinalized();
+        if (!EnsureFinalized()) return default(T);
 
         if (!properties.ContainsKey(key))
         {
-            LogError("Unknown property requested: " + key);
+            Logger("Unknown property requested: " + key);
             return default(T);
         }
         try
@@ -394,7 +386,7 @@ public class ConfigFile
         }
         catch
         {
-            LogError("Type mismatch for property: " + key);
+            Logger("Type mismatch for property: " + key);
             return default(T);
         }
     }
@@ -403,18 +395,19 @@ public class ConfigFile
     /// Retrieves a sub configuration instance.
     /// Returns null if the sub config is not registered.
     /// </summary>
+    /// <param name="name">A sub config instance. Null if failed to get sub config.</param>
     public ConfigFile GetSubConfig(string name)
     {
-        EnsureFinalized();
+        if (!EnsureFinalized()) return null;
 
         if (!subConfigs.ContainsKey(name))
         {
-            LogError("Unknown sub config requested: " + name);
+            Logger("Unknown sub config requested: " + name);
             return null;
         }
         return subConfigs[name];
     }
-    
+
     /// <summary>
     /// Gets a reference to a sub configuration by name.
     /// Can be called before finalization.
@@ -424,7 +417,7 @@ public class ConfigFile
     {
         if (!subConfigs.ContainsKey(name))
         {
-            LogError("Unknown sub config requested: " + name);
+            Logger("Unknown sub config requested: " + name);
             return null;
         }
         return subConfigs[name];
@@ -434,25 +427,28 @@ public class ConfigFile
     /// Checks the programmable block's CustomData.
     /// If empty, writes the default config.
     /// </summary>
-    public void CheckAndWriteDefaults()
+    /// <returns>True if the config was written or already present.</returns>
+    public bool CheckAndWriteDefaults()
     {
-        EnsureFinalized();
+        if (!EnsureFinalized()) return false;
 
         if (string.IsNullOrWhiteSpace(pb.CustomData))
         {
             string defaultConfig = GenerateDefaultConfigText();
             pb.CustomData = defaultConfig;
-            program.Echo("No configuration data found. Default config added to Custom Data.");
+            Logger("No configuration data found. Default config added to Custom Data.");
+            // going to return true anyway since we wrote the default config
         }
+        return true;
     }
 
     /// <summary>
     /// Checks if the CustomData has changed since the last parse, and if so, re-parses it.
-    /// Any errors are output using the program's Echo method.
     /// </summary>
+    /// <returns>True if the config was re-parsed.</returns>
     public bool CheckAndReparse()
     {
-        EnsureFinalized();
+        if (!EnsureFinalized()) return false;
 
         if (string.IsNullOrWhiteSpace(pb.CustomData))
             return false;
@@ -461,10 +457,6 @@ public class ConfigFile
         {
             if (!ParseConfig(pb.CustomData))
             {
-                foreach (var error in ErrorLog)
-                {
-                    program.Echo(error);
-                }
                 return false;
             }
             configText = pb.CustomData;
