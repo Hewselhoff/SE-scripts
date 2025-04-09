@@ -34,12 +34,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Program reference
             public MyGridProgram program;
             // Sampling constants
-            public static const UpdateFrequency CHECK_FREQUENCY = UpdateFrequency.Update100;
-            public static const UpdateType CHECK_TYPE = UpdateType.Update100;
-            public static const UpdateFrequency SAMPLE_FREQUENCY = UpdateFrequency.Update1;
-            public static const UpdateType SAMPLE_TYPE = UpdateType.Update1;
-            public static const UpdateFrequency STOP_FREQUENCY = UpdateFrequency.None; 
-            public static const UpdateType STOP_TYPE = ~(SAMPLE_TYPE | CHECK_TYPE); // Anything that's not SAMPLE_TYPE or CHECK_TYPE
+            public const UpdateFrequency CHECK_FREQUENCY = UpdateFrequency.Update100;
+            public const UpdateType CHECK_TYPE = UpdateType.Update100;
+            public const UpdateFrequency SAMPLE_FREQUENCY = UpdateFrequency.Update1;
+            public const UpdateType SAMPLE_TYPE = UpdateType.Update1;
+            public const UpdateFrequency STOP_FREQUENCY = UpdateFrequency.None; 
+            public const UpdateType STOP_TYPE = ~(SAMPLE_TYPE | CHECK_TYPE); // Anything that's not SAMPLE_TYPE or CHECK_TYPE
             // Runtime update state
             public UpdateFrequency updateFrequency;
             public UpdateType updateType;
@@ -284,10 +284,10 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
 
                 // Do any update type specific tasks
                 switch (currentUpdateType) {
-                    case state.SAMPLE_TYPE:
+                    case GridState.SAMPLE_TYPE:
                         OnSampleTypeUpdate();
                         break;
-                    case state.CHECK_TYPE:
+                    case GridState.CHECK_TYPE:
                         OnCheckTypeUpdate();
                         break;
                     default:
@@ -400,7 +400,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// <returns>True if the command was executed successfully, false otherwise.</returns>
             public bool HandleCommand(string args) {
                 bool ret = true;
-                if !(argParser.Parse(args)) {
+                if (!argParser.Parse(args)) {
                     // Log any errors from the argument parser
                     foreach (var err in argParser.Errors) {
                         logger.Error(err);
@@ -881,7 +881,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 {
                     ConfigFile subCfg = kvp.Value;
                     // Finalize sub config registrations recursively.
-                    if (!subCfg.FinalizeRegistration());
+                    if (!subCfg.FinalizeRegistration())
                     {
                         Logger($"Failed to finalize sub config '{kvp.Key}'.");
                         return false;
@@ -925,14 +925,11 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 {
                     sb.AppendLine($"{kvp.Key}:");
                     string subText = kvp.Value.GenerateDefaultConfigText();
-                    // Indent each line by two spaces (default output format for generated text).
-                    using (StringReader sr = new StringReader(subText))
+                    // Indent each line by two spaces manually.
+                    string[] lines = subText.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
+                    foreach (var line in lines)
                     {
-                        string line;
-                        while ((line = sr.ReadLine()) != null)
-                        {
-                            sb.AppendLine("  " + line);
-                        }
+                        sb.AppendLine("  " + line);
                     }
                 }
                 return sb.ToString();
@@ -1570,7 +1567,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                                 List<int> list = new List<int>();
                                 foreach (var val in values)
                                 {
-                                    if (!int.TryParse(val, out int parsed))
+                                    int parsed;
+                                    if (!int.TryParse(val, out parsed))
                                     {
                                         Errors.Add("Invalid value for argument " + token + ": " + val);
                                         continue;
@@ -1584,7 +1582,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                                 List<float> list = new List<float>();
                                 foreach (var val in values)
                                 {
-                                    if (!float.TryParse(val, out float parsed))
+                                    float parsed;
+                                    if (!float.TryParse(val, out parsed))
                                     {
                                         Errors.Add("Invalid value for argument " + token + ": " + val);
                                         continue;
@@ -1598,7 +1597,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                                 List<double> list = new List<double>();
                                 foreach (var val in values)
                                 {
-                                    if (!double.TryParse(val, out double parsed))
+                                    double parsed;
+                                    if (!double.TryParse(val, out parsed))
                                     {
                                         Errors.Add("Invalid value for argument " + token + ": " + val);
                                         continue;
@@ -1612,7 +1612,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                                 List<bool> list = new List<bool>();
                                 foreach (var val in values)
                                 {
-                                    if (!bool.TryParse(val, out bool parsed))
+                                    bool parsed;
+                                    if (!bool.TryParse(val, out parsed))
                                     {
                                         Errors.Add("Invalid value for argument " + token + ": " + val);
                                         continue;
@@ -1673,18 +1674,20 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         /* v Grid Orientation Controller                                            v */
         /* v ---------------------------------------------------------------------- v */
         // TODO: Update
-        public class GridOrient: {
+        public class GridOrient {
             public GridContext context;
             public List<IMyGyro> gyros;
             public bool running, orienting;
             public ArgParser argParser;
             public ConfigFile config;
             public double errorAngle;
+            public UpdateFrequency updateFrequency;
+            public UpdateType updateType;
             public long lastGridId;
 
             // Constructor
             public GridOrient(GridContext gridContext) {
-                this.context = context;
+                this.context = gridContext;
                 this.lastGridId = long.MinValue;
                 // Find ship gyros
                 GetMyGyros();
@@ -1739,7 +1742,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 }
                 
                 // Convert rotationAngle from radians to degrees for gyro override inputs.
-                Kp = ConfigFile.Get<float>("Kp");
+                float Kp = config.Get<float>("Kp");
                 double overrideValue = Kp * rotationAngle * (180.0 / Math.PI);
                 
                 // For each gyro, transform the error (rotation axis) from world space to the gyro's local space.
@@ -1763,8 +1766,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             public void StartActiveOrientation() {
                 // Set update frequency if not already running the control loop.
                 if (!orienting) {
-                    updateFrequency = context.state.SAMPLE_FREQUENCY;
-                    updateType = context.state.SAMPLE_TYPE;
+                    updateFrequency = GridState.SAMPLE_FREQUENCY;
+                    updateType = GridState.SAMPLE_TYPE;
                     orienting = true;
                     context.logger.Info("Reorienting to " + context.gridRefBlock.CubeGrid.CustomName + ".");
                 }
@@ -1779,19 +1782,19 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     gyro.SetValueFloat("Yaw", 0f);
                     gyro.SetValueFloat("Roll", 0f);
                 }
-                updateFrequency = context.state.CHECK_FREQUENCY;
-                updateType = context.state.CHECK_TYPE;
+                updateFrequency = GridState.CHECK_FREQUENCY;
+                updateType = GridState.CHECK_TYPE;
                 orienting = false;
                 context.logger.Info("Orientation complete.");
             }
 
             // Turn off Auto-orientation
             public void StopGridAutoOrientation() {
-                lastGridId = context.refAxes.gridId;
                 if (!running) {
                     // if we're not running, just return.
                     return;
                 }
+                lastGridId = context.gridRefBlock.CubeGrid.EntityId;
                 foreach (var gyro in gyros) {
                     gyro.SetValueBool("Override", false);
                     gyro.SetValueFloat("Pitch", 0f);
@@ -1799,8 +1802,8 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     gyro.SetValueFloat("Roll", 0f);
                     gyro.SetValueFloat("Power", 1.0f);
                 }
-                updateFrequency = context.state.STOP_FREQUENCY;
-                updateType = context.state.STOP_TYPE;
+                updateFrequency = GridState.STOP_FREQUENCY;
+                updateType = GridState.STOP_TYPE;
                 orienting = false;
                 running = false;
                 context.logger.Info("Auto-orientation OFF.");
@@ -1808,12 +1811,12 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
 
             // Turn on Auto-orientation
             public void StartGridAutoOrientation() {
-                lastGridId = context.refAxes.gridId;
                 if (running) {
                     // If we're already running, just return.
                     return;
                 }
-                updateFrequency = context.state.CHECK_FREQUENCY;
+                lastGridId = context.gridRefBlock.CubeGrid.EntityId;
+                updateFrequency = GridState.CHECK_FREQUENCY;
                 orienting = false;
                 running = true;
                 // Enable gyro overrides for all gyros on the grid.
@@ -1827,7 +1830,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Perform the grid auto-orientation
             public void PerformAutoOrientation() {
                 // If reference grid changed, stop grid auto-orientation.
-                if (context.refAxes.gridId != lastGridId) {
+                if (context.gridRefBlock.CubeGrid.EntityId != lastGridId) {
                     StopGridAutoOrientation();
                     return;
                 }
@@ -1852,9 +1855,9 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                 
                 context.logger.Info("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
 
-                if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("tolerance")) {
+                if (orienting && Math.Abs(errorAngle) <= config.Get<float>("tolerance")) {
                     StopActiveOrientation();
-                } else if (!orienting && Math.Abs(errorAngle) > ConfigFile.Get<float>("tolerance")) {
+                } else if (!orienting && Math.Abs(errorAngle) > config.Get<float>("tolerance")) {
                     StartActiveOrientation();
                 }
             }
@@ -1880,7 +1883,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             /// </summary>
             /// <param name="val">True to start auto-orientation, false to stop.</param>
             public void Orient(bool val) {
-                if (!(IsInitialized() && gyros != null && gyros.Count != 0)) {
+                if (!(context.HasReferenceGrid() && gyros != null && gyros.Count != 0)) {
                     context.logger.Error("No reference grid set. Cannot start auto orientation.");
                     return;
                 }
@@ -2037,7 +2040,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
 
         public void Main(string args, UpdateType updateSource) {
             // Do pre-Main bookkeeping tasks
-            gridContext.PreMain();
+            gridContext.PreMain(updateSource);
             
             // Parse and handle command line arguments.
             if (!argParser.Parse(args))
@@ -2069,7 +2072,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }            
 
             // Perform control inputs
-            PerformAutoOrientation();
+            gridOrient.PerformAutoOrientation();
 
             // Do post-Main tasks
             gridContext.PostMain();      
