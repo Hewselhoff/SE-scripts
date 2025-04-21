@@ -1,7 +1,10 @@
 // Global constants
 public const string IGC_TAG_PREFIX = "NET";
-public const string URI_PROTOCOL = "grid";
-public const string URI_REGEX_PATTERN = @"^grid://(?<grid>[^/]+)/(?<block>[^?]+)\?(?<payload>.*)$";
+public const string GRID_URI_PROTOCOL = "grid";
+public const string BLOCK_URI_PROTOCOL = "block";
+
+public const string GRID_URI_REGEX_PATTERN = $@"^{GRID_URI_PROTOCOL}://(?<grid_name>[^/]+)/(?<pb_name>[^/?]+)(/(?<endpoint_path>[^?]*))?(\?(?<query_string>.*))?$";
+
 public const string ROUTER_NAME_TAG = "[ROUTER]";
 
 // Global variables
@@ -10,16 +13,17 @@ public GridModem modem;
 
 public class GridURI{
     // URI components
-    public string grid;
-    public string block;
-    public string payload;
+    public string grid_name;
+    public string pb_name;
+    public string endpoint_path;
+    public string query_string;
 
     /// <summary>
     /// Constructor for the GridURI class.
     /// 
     /// The constructor takes a grid URI in the form of
     /// 
-    ///  "grid://[grid]/[block]?[payload]" 
+    ///  "grid://[grid_name]/[pb_name]/[endpoint_path]?[query_string]" 
     /// 
     /// and splits it into its components for validation.
     /// </summary>
@@ -27,44 +31,55 @@ public class GridURI{
     /// <returns>True if the URI is valid, otherwise false.</returns>
     public GridURI(string uri)
     {
-        grid = null;
-        block = null;
-        payload = null;
+        grid_name = null;
+        pb_name = null;
+        endpoint_path = null;
+        query_string = null;
 
         // Split the URI into its components
-        var match = System.Text.RegularExpressions.Regex.Match(uri, URI_REGEX_PATTERN);
+        var match = System.Text.RegularExpressions.Regex.Match(uri, GRID_URI_REGEX_PATTERN);
         if (!match.Success)
         {
             return;
         }
-        grid = match.Groups["grid"].Value;
-        block = match.Groups["block"].Value;
-        payload = match.Groups["payload"].Value;
+        grid_name = match.Groups["grid_name"].Value;
+        pb_name = match.Groups["pb_name"].Value;
+        endpoint_path = match.Groups["endpoint_path"].Value;
+        query_string = match.Groups["query_string"].Value;
 
         return;
     }
 
     public bool IsValid()
     {
-        return grid != null && block != null && payload != null;
+        return grid_name != null && pb_name != null;
     }
 
     /// <summary>
-    /// This method assembles the IGC tag string from the URI.
+    /// This method assembles the IGC tag string from the grid URI.
     /// </summary>
     /// <returns>The IGC tag string representation for the URI.</returns>
     public string CompileTag()
     {
-        return $"{IGC_TAG_PREFIX}:{grid}";
+        return $"{IGC_TAG_PREFIX}:{grid_name}";
     }
 
     /// <summary>
-    /// This method assembles the IGC data string for the URI.
+    /// This method assembles the IGC data string as a valid block URI.
     /// </summary>
-    /// <returns>The IGC data string representation of the URI.</returns>
+    /// <returns>The IGC data string representation of the block URI.</returns>
     public string CompileData()
     {
-        return $"@{block}?{payload}";
+        string data = $"{BLOCK_URI_PROTOCOL}://{pb_name}";
+        if (endpoint_path != null)
+        {
+            data += $"/{endpoint_path}";
+        }
+        if (query_string != null)
+        {
+            data += $"?{query_string}";
+        }
+        return data;
     }
 }
 
@@ -219,7 +234,7 @@ public void Main(string argument, UpdateType updateSource)
             GridURI uri = new GridURI(argument);
             if (uri.IsValid() == false)
             {
-                Echo("Invalid URI format. Please use the format: grid://[grid]/[block]?[payload]");
+                Echo("Invalid URI format. Please use the format: grid://[grid_name]/[pb_name]/[endpoint_path]?[query_string]");
                 return;
             }
             modem.SendMessage(uri);

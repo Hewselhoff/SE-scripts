@@ -1,44 +1,68 @@
 // Global constants
-public const string COMMAND_REGEX_PATTERN = @"^@(?<block>[^?]+)\?(?<payload>.*)$";
+public const string BLOCK_URI_PROTOCOL = "block";
+public const string SERVER_URI_PROTOCOL = "server";
+public const string BLOCK_URI_REGEX_PATTERN = $@"^{BLOCK_URI_PROTOCOL}://(?<pb_name>[^/?]+)(/(?<endpoint_path>[^?]*))?(\?(?<query_string>.*))?$";
+
 
 // Global variables
 public GridRouter router;
 
-public class BlockMessage{
+public class BlockURI
+{
     // URI components
-    public string block;
-    public string payload;
+    public string pb_name;
+    private string endpoint_path;
+    private string query_string;
 
-    /// <summary>
-    /// Constructor for the BlockMessage class.
-    /// 
-    /// The constructor takes a block message string in the form of
-    /// 
-    ///  "@[block]?[payload]" 
-    /// 
-    /// and splits it into its components for validation.
-    /// </summary>
-    /// <param name="message">The message string representation.</param>
-    /// <returns>True if the message is valid, otherwise false.</returns>
-    public BlockMessage(string message)
+    public BlockURI(string block_uri_string)
     {
-        block = null;
-        payload = null;
+        pb_name = null;
+        endpoint_path = null;
+        query_string = null;
+
         // Split the URI into its components
-        var match = System.Text.RegularExpressions.Regex.Match(message, COMMAND_REGEX_PATTERN);
+        var match = System.Text.RegularExpressions.Regex.Match(block_uri_string, BLOCK_URI_REGEX_PATTERN);
         if (!match.Success)
         {
             return;
         }
-        block = match.Groups["block"].Value;
-        payload = match.Groups["payload"].Value;
-        return;
+        pb_name = match.Groups["pb_name"].Value;
+        endpoint_path = match.Groups["endpoint_path"].Value;
+        query_string = match.Groups["query_string"].Value;
     }
 
     public bool IsValid()
     {
-        return block != null && payload != null;
+        return pb_name != null;
     }
+
+    public bool IsValidServerURI()
+    {
+        return IsValid() && endpoint_path != null;
+    }
+
+    private string CompileServerUriString()
+    {
+        string data = $"{SERVER_URI_PROTOCOL}://endpoint_path}";
+        if (query_string != null)
+        {
+            data += $"?{query_string}";
+        }
+        return data;
+    }
+
+    public string CompileBlockArgument()
+    {
+        if (IsValidServerURI())
+        {
+            return CompileServerUriString();
+        }
+        else
+        {
+            return $"{query_string}";
+        }
+    }
+
 }
 
 public class GridRouter
@@ -105,27 +129,27 @@ public class GridRouter
     /// <summary>
     /// Route a message to a target block on this grid.
     /// </summary>
-    /// <param name="raw_message">The raw message string.</param>
-    public void RouteMessage(string raw_message)
+    /// <param name="block_uri_string">The raw block URI string.</param>
+    public void RouteMessage(string block_uri_string)
     {
-        // Parse the message
-        BlockMessage message = new BlockMessage(raw_message);
+        // Parse the block URI string
+        BlockURI block_uri = new BlockURI(block_uri_string);
 
-        // Check if the message is valid
-        if (!message.IsValid())
+        // Check if the URI is valid
+        if (!block_uri.IsValid())
         {
-            program.Echo("Invalid message format. Please use the format: @block?[payload]");
+            program.Echo("Invalid block URI format. Please use the format: block://[block_name]?[payload]");
             return;
         }
 
         // Get the target block
-        IMyProgrammableBlock block = GetTargetBlock(message.block);
+        IMyProgrammableBlock target_block = GetTargetBlock(block_uri.pb_name);
 
         // Check if the target block is valid and functional
-        if (block != null && block.IsFunctional)
+        if (target_block != null && target_block.IsFunctional)
         {
-            block.TryRun(message.payload);
-            program.Echo($"Message routed to {block.CustomName}");
+            target_block.TryRun(block_uri.CompileBlockArgument);
+            program.Echo($"Message routed to {target_block.CustomName}");
         }
         else
         {

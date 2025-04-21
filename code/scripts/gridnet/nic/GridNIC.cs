@@ -5,7 +5,7 @@ public class GridNIC
 {
     // Constants
     private const string MODEM_NAME_TAG = "[MODEM]";
-    private const string URI_PROTOCOL = "grid";
+    private const string GRID_URI_PROTOCOL = "grid";
     // Properties
     private MyGridProgram program;
     private IMyCubeGrid grid;
@@ -96,17 +96,38 @@ public class GridNIC
     /// <summary>
     /// Send a message over the network.
     /// </summary>
-    /// <param name="grid">the destination grid name.</param>
-    /// <param name="block">the name of the destination programmable block.</param>
-    /// <param name="payload">the message payload</param>
-    public void Send(string grid, string block, string payload)
+    /// <param name="grid_name">the destination grid name.</param>
+    /// <param name="pb_name">the name of the destination programmable block name.</param>
+    /// <param name="endpoint_path">optional endpoint path for Server PBs.</param>
+    /// <param name="query_string">optional query string to use as the arguments for the destination PB</param>
+    public void Send(string grid_name, string pb_name, string endpoint_path = null, string query_string = null)
     {
-
         if (IsConnected())
         {
-            // Assemble URI
-            program.Echo($"Sending message to {block} on {grid}");
-            string uri = $"{URI_PROTOCOL}://{grid}/{block}?{payload}";
+            program.Echo($"Sending message to {pb_name} on {grid_name}");
+            
+            // Build the URI with proper formatting based on what's provided
+            string uri = $"{GRID_URI_PROTOCOL}://{grid_name}/{pb_name}";
+            
+            // Add endpoint path if provided
+            if (!string.IsNullOrEmpty(endpoint_path))
+            {
+                // Ensure endpoint_path starts with a slash
+                if (!endpoint_path.StartsWith("/"))
+                    endpoint_path = "/" + endpoint_path;
+                uri += endpoint_path;
+            }
+            
+            // Add query string if provided
+            if (!string.IsNullOrEmpty(query_string))
+            {
+                // Ensure query_string starts with a question mark
+                if (!query_string.StartsWith("?"))
+                    uri += "?" + query_string;
+                else
+                    uri += query_string;
+            }
+            
             modem.TryRun(uri);
         }
         else
