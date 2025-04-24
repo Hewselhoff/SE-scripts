@@ -5,7 +5,7 @@
         /* v GridDNS                                                                v */
         /* v ---------------------------------------------------------------------- v */
         #region GridDNS
-                // GridMap Constants
+        // GridMap Constants
         public const string GRIDMAP_IGC_STATUS_TAG = "GRIDMAP:STATUS";
         public const string GRIDMAP_IGC_INIT_TAG = "GRIDMAP:INIT";
         public const long GRIDMAP_TICK_INTERVAL_MS = 16; // 60Hz = 16.7 ms; round down so our check hits on the closest update
