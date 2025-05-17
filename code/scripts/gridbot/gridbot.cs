@@ -964,7 +964,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
         /* v RefAxes Transformations                                               v */ 
         /* v ---------------------------------------------------------------------- v */
         public class RefAxes {
-            public MatrixD worldRef;
+            public MatrixD worldRef; // Grid's World Matrix.
             public MatrixD localRef;
             public MatrixD localHome;
             public IMyCubeGrid refGrid;
@@ -1240,7 +1240,7 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             // Call the alignment function to update gyro overrides.    
             double errorAngle = ApplyOrientationUpdate(shipRefBlock, gridRefBlock, gyros, ConfigFile.Get<float>("Kp"));
             
-            logger.Info("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
+            //logger.Info("Alignment error: " + (errorAngle * 180.0 / Math.PI).ToString("F2") + " degrees");
 
             if (orienting && Math.Abs(errorAngle) <= ConfigFile.Get<float>("tolerance")) {
                 StopActiveOrientation();
@@ -1380,6 +1380,112 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             }
             refAxes.ResetHomeOrientation();
         }
+
+        /// <summary>
+        /// Handles the forward command.
+        /// </summary>
+        public void Forward(float distance ) {
+            if (distance == 0) {
+               distance = 1;
+               logger.Info("Using default movement distance of 1 meter.");
+            }
+
+            logger.Info("Remote Control Direction relative to Grid?: " + shipRefBlock.Direction.ToString());
+            logger.Info("Remote Control Pos In Body Frame (relative to Grid Pivot?): " + shipRefBlock.Position.ToString());
+            IMyCubeGrid cubeGrid = shipRefBlock.CubeGrid;
+            logger.Info("World Position of Grid Pivot: " + cubeGrid.GetPosition().ToString());
+            logger.Info("World Position of Remote Control Block: " + shipRefBlock.GetPosition().ToString());
+
+            // Right is (x,0,0), Up is (0,x,0), Back is (0,0,x)
+            Vector3D forwardInBodyFrame = new Vector3D(0,0,-distance);
+            Vector3D worldPosOfForwardVec = Vector3D.Transform(forwardInBodyFrame, shipRefBlock.WorldMatrix);
+            logger.Info("World Position of " + distance + " meters forward in Body Frame: " + worldPosOfForwardVec.ToString());
+            MyWaypointInfo waypoint = new MyWaypointInfo("Forward Vector", worldPosOfForwardVec);
+            shipRefBlock.ClearWaypoints();
+            shipRefBlock.FlightMode = FlightMode.OneWay;
+            shipRefBlock.AddWaypoint(waypoint);
+            shipRefBlock.SetAutoPilotEnabled(true);
+        }
+
+        /// <summary>
+        /// Handles the back command.
+        /// </summary>
+        public void Back(float distance ) {
+            if (distance == 0) {
+               distance = 1;
+               logger.Info("Using default movement distance of 1 meter.");
+            }
+            Forward(-distance);
+        }
+
+        /// <summary>
+        /// Handles the up command.
+        /// </summary>
+        public void Up(float distance ) {
+            if (distance == 0) {
+               distance = 1;
+               logger.Info("Using default movement distance of 1 meter.");
+            }
+
+            IMyCubeGrid cubeGrid = shipRefBlock.CubeGrid;
+
+            // Right is (x,0,0), Up is (0,x,0), Back is (0,0,x)
+            Vector3D upInBodyFrame = new Vector3D(0,distance,0);
+            Vector3D worldPosOfUpVec = Vector3D.Transform(upInBodyFrame, shipRefBlock.WorldMatrix);
+            MyWaypointInfo waypoint = new MyWaypointInfo("Up Vector", worldPosOfUpVec);
+            shipRefBlock.ClearWaypoints();
+            shipRefBlock.FlightMode = FlightMode.OneWay;
+            shipRefBlock.AddWaypoint(waypoint);
+            shipRefBlock.SetAutoPilotEnabled(true);
+        }
+
+        /// <summary>
+        /// Handles the down command.
+        /// </summary>
+        public void Down(float distance ) {
+            if (distance == 0) {
+               distance = 1;
+               logger.Info("Using default movement distance of 1 meter.");
+            }
+            Up(-distance);
+        }
+
+        /// <summary>
+        /// Handles the right command.
+        /// </summary>
+        public void Right(float distance ) {
+            if (distance == 0) {
+               distance = 1;
+               logger.Info("Using default movement distance of 1 meter.");
+            }
+
+            IMyCubeGrid cubeGrid = shipRefBlock.CubeGrid;
+
+            // Right is (x,0,0), Up is (0,x,0), Back is (0,0,x)
+            Vector3D rightInBodyFrame = new Vector3D(distance,0,0);
+            Vector3D worldPosOfRightVec = Vector3D.Transform(rightInBodyFrame, shipRefBlock.WorldMatrix);
+            MyWaypointInfo waypoint = new MyWaypointInfo("Right Vector", worldPosOfRightVec);
+            shipRefBlock.ClearWaypoints();
+            shipRefBlock.FlightMode = FlightMode.OneWay;
+            shipRefBlock.AddWaypoint(waypoint);
+            shipRefBlock.SetAutoPilotEnabled(true);
+        }
+
+        /// <summary>
+        /// Handles the left command.
+        /// </summary>
+        public void Left(float distance ) {
+            if (distance == 0) {
+               distance = 1;
+               logger.Info("Using default movement distance of 1 meter.");
+            }
+            Right(-distance);
+        }
+
+        public void Clear() {
+           logger.Clear();
+        }
+
         /* ^ ---------------------------------------------------------------------- ^ */ 
         /* ^ Command Handlers                                                       ^ */ 
         /* ^ ---------------------------------------------------------------------- ^ */
@@ -1407,6 +1513,13 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             argParser.RegisterArg("set-home", typeof(bool), false, false); // Set home orientation
             argParser.RegisterArg("home", typeof(bool), false, false); // Go to home orientation
             argParser.RegisterArg("reset-home", typeof(bool), false, false); // Reset home orientation
+            argParser.RegisterArg("forward", typeof(float), false, false); // Forward movement
+            argParser.RegisterArg("back", typeof(float), false, false); // Forward movement
+            argParser.RegisterArg("up", typeof(float), false, false); // Forward movement
+            argParser.RegisterArg("down", typeof(float), false, false); // Forward movement
+            argParser.RegisterArg("left", typeof(float), false, false); // Forward movement
+            argParser.RegisterArg("right", typeof(float), false, false); // Forward movement
+            argParser.RegisterArg("clear", typeof(bool), false, false); // Clear logs
             
             argParser.OnlyAllowSingleArg = true;
 
@@ -1481,6 +1594,33 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
                     case "--reset-home":
                         ResetHome();
                         break;
+                    case "--forward":
+                        float distance = (float)kvp.Value;
+                        Forward(distance);
+                        break;
+                    case "--back":
+                        distance = (float)kvp.Value;
+                        Forward(-distance);
+                        break;
+                    case "--up":
+                        distance = (float)kvp.Value;
+                        Up(distance);
+                        break;
+                    case "--down":
+                        distance = (float)kvp.Value;
+                        Up(-distance);
+                        break;
+                    case "--right":
+                        distance = (float)kvp.Value;
+                        Right(distance);
+                        break;
+                    case "--left":
+                        distance = (float)kvp.Value;
+                        Right(-distance);
+                        break;
+                    case "--clear":
+                        logger.Clear();
+                        break;
                     default:
                         logger.Error("Unknown argument: " + kvp.Key);
                         break;
@@ -1491,7 +1631,6 @@ namespace SpaceEngineers.UWBlockPrograms.GridBot {
             PerformAutoOrientation();
             
         }
-
 #region PreludeFooter
     }
 }

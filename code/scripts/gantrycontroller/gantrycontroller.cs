@@ -647,19 +647,28 @@ public static IMyRemoteControl FindShipRefBlock(MyGridProgram program) {
     return shipRefBlock;
 }
 
-private bool isMoving = false;
 private float speedOverride = 0.01f;
+private float pistonStep = 0.5f; // Piston travel increment in meters.
+private bool isMoving = false;
+
 
 /// <summary>
 /// Handles the forward command.
 /// </summary>
 public void Forward(float spd) {
-    if(spd == 0){
-       isMoving = false;
-    }else{
+    // If carriage is already in motion, then stop it.
+    if(isMoving){
+       Brake(true);
+       Echo("Stopping.");
+       return;
+    }
+
+    if(spd != 0.0f){
+       Echo("Going!");
        isMoving = true;
        Brake(false);
     }
+
 
     foreach(IMyMotorSuspension wheel in wheels){
        wheel.PropulsionOverride = spd;
@@ -675,16 +684,53 @@ public void Back(float spd) {
 }
 
 /// <summary>
-/// Handles the up command.
+/// Raises piston one step (0.5 meters).
 /// </summary>
-public void Up() {
+public void StepUp() {
+   piston.MinLimit = piston.CurrentPosition - pistonStep;
+   piston.MaxLimit = piston.MinLimit;
+   piston.Retract();
+   Echo("Piston extending to " + piston.MinLimit + " meters.");
+   Echo("Piston Highest Position " + piston.LowestPosition + " meters.");
 }
 
 /// <summary>
-/// Handles the down command.
+/// Raises piston.
+/// </summary>
+public void Up() {
+   if(piston.Status == PistonStatus.Retracting){
+      piston.MinLimit = piston.CurrentPosition;
+   }else{
+      Echo("Piston is retracting.");
+      piston.MinLimit = piston.LowestPosition;
+      piston.Retract();
+   }
+}
+
+/// <summary>
+/// Lowers piston one step (0.5 meters).
+/// </summary>
+public void StepDown() {
+   piston.MaxLimit = piston.CurrentPosition + pistonStep;
+   piston.MinLimit = piston.MaxLimit;
+   piston.Extend();
+   Echo("Piston retracting to " + piston.MaxLimit + " meters.");
+   Echo("Piston Lowest Position " + piston.HighestPosition + " meters.");
+   Echo("Piston Status: " + piston.Status.ToString());
+}
+
+/// <summary>
+/// Lowers piston.
 /// </summary>
 public void Down() {
-   Up();
+   if(piston.Status == PistonStatus.Extending){
+      piston.MaxLimit = piston.CurrentPosition;
+      Echo("Piston stopped.");
+   }else{
+      Echo("Piston is extending.");
+      piston.MaxLimit = piston.HighestPosition;
+      piston.Extend();
+   }
 }
 
 /// <summary>
@@ -692,6 +738,7 @@ public void Down() {
 /// <param name="apply">boolean indicating whether brakes are to be applied</param>
 /// </summary>
 public void Brake(bool apply) {
+    
     if(apply){
        isMoving = false;
        Forward(0.0f); // Reduce wheel speed to 0
@@ -700,7 +747,7 @@ public void Brake(bool apply) {
     foreach(IMyMotorSuspension wheel in wheels){
        wheel.Brake = apply;
     }
-    Echo("Brakes Engagned: " + apply);
+    Echo("Brakes Engaged: " + apply);
 }
 
 /// <summary>
@@ -708,7 +755,6 @@ public void Brake(bool apply) {
 /// <param name="dock">obsolete (TODO: Remove)</param>
 /// </summary>
 public void Dock(bool dock) {
-    isMoving = false;
     if(dockingConnector != null){
        Brake(true);
        dockingConnector.ToggleConnect();
@@ -727,9 +773,72 @@ public void SetSpeed(float speed) {
    speedOverride = speed;
 }
 
+/// <summary>
+/// Raise hinge.
+/// </summary>
+public void HingeUp() {
+   if(!toolHinge.RotorLock) {
+      toolHinge.TargetVelocityRPM = 0.0f;
+      toolHinge.RotorLock = true;
+      return;
+   }
+
+
+   if(toolHinge.Angle > toolHinge.LowerLimitDeg) {
+      toolHinge.RotorLock = false;
+      toolHinge.TargetVelocityRPM = -2.0f;
+   }
+   
+   /* Hinge Fields and Methods
+   toolHinge.LowerLimitDeg = 0.0f;
+   toolHinge.UpperLimitDeg = 0.0f;
+   toolHinge.Torque = 20.0f; // Newton-meters?
+   toolHinge.RotorLock = true;
+   toolHinge.RotateToAngle(MyRotationDirection,float angle, float absoluteVelocityRpm);
+   toolHinge.Angle
+   */
+}
+
+/// <summary>
+/// Lower hinge.
+/// </summary>
+public void HingeDown() {
+   if(!toolHinge.RotorLock) {
+      toolHinge.TargetVelocityRPM = 0.0f;
+      toolHinge.RotorLock = true;
+      return;
+   }
+
+   
+
+   if(toolHinge.Angle < toolHinge.UpperLimitDeg) {
+      toolHinge.RotorLock = false;
+      toolHinge.TargetVelocityRPM = 2.0f;
+   }
+}
+
+/// <summary>
+/// Toggle Welder.
+/// </summary>
+public void ToggleWelder() {
+   welder.Enabled = welder.Enabled ? false : true;
+}
+
+/// <summary>
+/// Toggle Mag Plate Lock.
+/// </summary>
+public void ToggleMagPlate() {
+   magPlate.ToggleLock();
+}
+
+
 
 private List<IMyMotorSuspension> wheels = new List<IMyMotorSuspension>();
 private IMyShipConnector dockingConnector;
+private IMyExtendedPistonBase piston;
+private IMyMotorAdvancedStator toolHinge;
+private IMyShipWelder welder; // Enabled = true/false.
+private IMyLandingGear magPlate;
 
 public Program() {
     // Register command line arguments
@@ -737,17 +846,28 @@ public Program() {
     argParser.RegisterArg("fwd", typeof(bool), false, false); // Forward movement at default speed
     argParser.RegisterArg("back", typeof(float), false, false); // Backward movement
     argParser.RegisterArg("bck", typeof(bool), false, false); // Backward movement at default speed
-    argParser.RegisterArg("up", typeof(float), false, false); // Upward movement
-    argParser.RegisterArg("down", typeof(float), false, false); // Downward movement
+    argParser.RegisterArg("stepup", typeof(bool), false, false); // Raise piston one step
+    argParser.RegisterArg("stepdown", typeof(bool), false, false); // Lower piston one step
+    argParser.RegisterArg("up", typeof(bool), false, false); // Raise piston
+    argParser.RegisterArg("down", typeof(bool), false, false); // Lower piston
     argParser.RegisterArg("brake", typeof(bool), false, false); // Apply brakes
     argParser.RegisterArg("dock", typeof(bool), false, false); // Apply E-Brake and dock
     argParser.RegisterArg("speed", typeof(float), false, false); // Set speed override
+    argParser.RegisterArg("hinge_up", typeof(bool), false, false); // Raise tool hinge
+    argParser.RegisterArg("hinge_dwn", typeof(bool), false, false); // Lower tool hinge
+    argParser.RegisterArg("weld", typeof(bool), false, false); // Toggle welder
+    argParser.RegisterArg("toggle_mag_lock", typeof(bool), false, false); // Toggle mag plate
+
     
     argParser.OnlyAllowSingleArg = true;
 
     // Register config parameters
     ConfigFile.RegisterProperty("wheels", ConfigValueType.String, "Wheels (Trolley)");
     ConfigFile.RegisterProperty("connector", ConfigValueType.String, "ConnectorDock (Trolley)");
+    ConfigFile.RegisterProperty("piston", ConfigValueType.String, "V-Piston (Trolley)");
+    ConfigFile.RegisterProperty("tool_hinge", ConfigValueType.String, "ToolHinge (Trolley)");
+    ConfigFile.RegisterProperty("welder", ConfigValueType.String, "Welder (Trolley)");
+    ConfigFile.RegisterProperty("mag_plate", ConfigValueType.String, "MagPlate (Trolley)");
 
     Echo("wheels: " + ConfigFile.Get<string>("wheels"));
 
@@ -755,6 +875,17 @@ public Program() {
     // so we don't allocate new memory every time the main script executes.
     ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("wheels"))).GetBlocksOfType<IMyMotorSuspension>(wheels);
     dockingConnector = (IMyShipConnector)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("connector"));
+
+    // These components are not present in end truck assemblies.  
+    try{
+       piston = (IMyExtendedPistonBase)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("piston"));
+       toolHinge = (IMyMotorAdvancedStator)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("tool_hinge"));
+       welder = (IMyShipWelder)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("welder"));
+       magPlate = (IMyLandingGear)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("mag_plate"));
+    }catch(Exception e){
+       Echo("WARNING: No piston/hinge/welder/mag-plate detected." + e.ToString());
+       throw;
+    }
 
     // Initialize the program
     Runtime.UpdateFrequency = STOP_RATE;
@@ -795,6 +926,12 @@ public void Main(string args) {
             case "--bck":
                 Back(speedOverride);
                 break;
+            case "--stepup":
+                StepUp();
+                break;
+            case "--stepdown":
+                StepDown();
+                break;
             case "--up":
                 Up();
                 break;
@@ -813,9 +950,22 @@ public void Main(string args) {
                 float speed = (float)kvp.Value;
                 SetSpeed(speed);
                 break;
+            case "--hinge_up":
+                HingeUp();
+                break;
+            case "--hinge_dwn":
+                HingeDown();
+                break;
+            case "--weld":
+                ToggleWelder();
+                break;
+            case "--toggle_mag_lock":
+                ToggleMagPlate();
+                break;
             default:
                 Echo("Unknown argument: " + kvp.Key);
                 break;
         }
     }
 }
+
