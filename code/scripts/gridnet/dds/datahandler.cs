@@ -1,12 +1,119 @@
-public IMyRemoteControl shipRefBlock;
-public IMyShipConnector gridRefBlock;
-public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
-public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
-public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
+private GridNIC nic;
+private List<IMyTextPanel> displays = new List<IMyTextPanel>();
+private string DISPLAY_TEXT_PANEL_TAG = "[STATUS]";
+private StringBuilder _outputBuilder = new StringBuilder();
 
 // Create an instance of ArgParser.
 ArgParser argParser = new ArgParser();
-private GridNIC nic;
+private bool LOGGING = false;
+
+public Program(){
+   Runtime.UpdateFrequency = UpdateFrequency.Once;
+   nic = new GridNIC(this);
+
+   // Register command line arguments
+   argParser.RegisterArg("display", typeof(string), false, false); // Display provided telmetry 
+
+   ConfigFile.RegisterProperty("DisplayTag", ConfigValueType.String, "[STATUS]");
+   DISPLAY_TEXT_PANEL_TAG = ConfigFile.Get<string>("DisplayTag");
+
+
+   if(LOGGING){
+      Echo("Logging is ON");
+   }else{
+      Echo("Logging is OFF");
+   }
+
+}
+
+public void Main(string args){
+
+    _outputBuilder.Clear();
+    _outputBuilder.AppendLine("Telemetry Exchange System");
+    _outputBuilder.AppendLine();
+    // Parse the input argument string.
+    if (!argParser.Parse(args))
+    {
+       Echo("LOGS.......");
+       foreach (string log in argParser.Logs)
+       {
+           Echo(log);
+       }
+       // Output errors if parsing fails.
+       Echo("ERRORS.......");
+       foreach (string error in argParser.Errors)
+       {
+           Echo("Error: " + error);
+       }
+       return;
+    }
+   
+    // TODO: Remove
+    if(LOGGING){
+       Echo("LOGS.......");
+       foreach (string log in argParser.Logs)
+       {
+           Echo(log);
+       }
+    }
+
+    // Find the display panels
+    displays = FindDisplayPanels();
+    if (displays.Count == 0)
+    {
+        _outputBuilder.AppendLine("WARNING: No display panels found.");
+        _outputBuilder.AppendLine($"Name a text panel with the tag {DISPLAY_TEXT_PANEL_TAG} to show status.");
+        //return;
+    }else{
+       if(LOGGING){
+          foreach(var display in displays){
+             Echo("display: " + display.CustomName);
+          }
+       }
+    }
+
+    Echo(_outputBuilder.ToString());
+
+    // Iterate over parsed arguments using the iterator and a switch statement.
+    foreach (var kvp in argParser.GetParsedArgs())
+    {
+        switch (kvp.Key)
+        {
+            case "--display":
+                UpdateDisplay((string)kvp.Value);
+                break;
+            default:
+                Echo("Unknown argument: " + kvp.Key);
+                break;
+        }
+    }
+
+}
+
+private List<IMyTextPanel> FindDisplayPanels()
+{
+    List<IMyTextPanel> panels = new List<IMyTextPanel>();
+    GridTerminalSystem.GetBlocksOfType(panels, p => p.CustomName.Contains(DISPLAY_TEXT_PANEL_TAG) && p.IsSameConstructAs(Me));
+    
+    return panels;
+}        
+
+
+private void UpdateDisplay(string data)
+{
+    // If we have display panels, update them
+    foreach(var display in displays){
+        display.ContentType = ContentType.TEXT_AND_IMAGE;
+        display.WriteText(data);
+        if(LOGGING){
+           Echo("Updating Display: " + display.CustomName);
+           Echo("Data: " + data);
+        }
+    }
+    
+    // Also echo the output to the programmable block's terminal
+}
+
 
 /* v --------------------------------------------------------------------- v */
 /* GridNet NIC                                                               */
@@ -225,6 +332,16 @@ public static class ConfigFile
     /// <returns>True if parsing was successful, false otherwise.</returns>
     public static bool ParseConfig(string configText, out List<string> errors)
     {
+
+        string customData = Me.CustomData;
+        if (string.IsNullOrWhiteSpace(customData))
+        {
+            // Generate default configuration
+            customData = GenerateDefaultConfigText();
+            Me.CustomData = customData;
+            Echo("No configuration found. Default config added to Custom Data.");
+        }
+
         errors = new List<string>();
 
         // Store the raw config text for later use.
@@ -522,6 +639,7 @@ public class ArgParser
 
     // List of errors that occurred during parsing.
     public List<string> Errors { get; private set; } = new List<string>();
+    public List<string> Logs { get; private set; } = new List<string>();
 
     // If true, the parser will only allow one argument per call.
     public bool OnlyAllowSingleArg { get; set; } = false;
@@ -561,32 +679,50 @@ public class ArgParser
     {
         // Clear previous errors and parsed arguments.
         Errors.Clear();
+        Logs.Clear();
         parsedArgs.Clear();
 
         if (string.IsNullOrWhiteSpace(input))
             return true; // Nothing to parse
 
+        // Check for args enclosed in quotes.
+        var tokens = input.Split(new char[] { '"' }, System.StringSplitOptions.RemoveEmptyEntries);
+        Logs.Add("Quoted Tokens: ");
+        foreach(var token in tokens){
+           Logs.Add(" " + token);
+        }
+
         // Split the input by spaces.
-        // (Note: for more advanced parsing, you might need to handle quoted strings.)
-        var tokens = input.Split(new char[] { ' ' }, System.StringSplitOptions.RemoveEmptyEntries);
+        if(tokens.Length <= 1){
+           tokens = input.Split(new char[] { ' ' }, System.StringSplitOptions.RemoveEmptyEntries);
+           Logs.Add("Tokens separated by whitespace: ");
+           foreach(var token in tokens){
+              Logs.Add(" " + token);
+           }
+        }
+
         int countArgsParsed = 0;
 
         // Loop through tokens.
         for (int i = 0; i < tokens.Length; i++)
         {
             string token = tokens[i];
+            Logs.Add("Token (" + i + "):|" + token + "|");
+            Logs.Add("Token (" + i + ") Trimmed:|" + token.Trim() + "|");
+            token = token.Trim();
+            Logs.Add("Token (" + i + ") Trimmed2:|" + token.Trim() + "|");
 
             // Each argument should start with "--"
             if (!token.StartsWith("--"))
             {
-                Errors.Add("Value provided without a preceding argument: " + token);
+                Errors.Add("Value provided without a preceding argument:(" + token + ")");
                 continue;
             }
 
             // Check if the argument is registered.
             if (!registeredArgs.ContainsKey(token))
             {
-                Errors.Add("Unrecognized argument: " + token);
+                Errors.Add("Unrecognized argument:(" + token + ")");
                 continue;
             }
 
@@ -755,358 +891,3 @@ public class ArgParser
 /* ^ ---------------------------------------------------------------------- ^ */ 
 /* ^ ArgParser API                                                          ^ */ 
 /* ^ ---------------------------------------------------------------------- ^ */
-
-
-// Find ship ref block (remote control)
-public static IMyRemoteControl FindShipRefBlock(MyGridProgram program) {
-    List<IMyRemoteControl> remotes = new List<IMyRemoteControl>();
-    program.GridTerminalSystem.GetBlocksOfType(remotes);
-    var shipRefBlock = remotes.FirstOrDefault(r => r.CubeGrid == program.Me.CubeGrid);
-    if (shipRefBlock == null) {
-        return null;
-    }
-    return shipRefBlock;
-}
-
-private float speedOverride = 0.01f;
-private float pistonStep = 0.5f; // Piston travel increment in meters.
-private bool isMoving = false;
-
-
-/// <summary>
-/// Handles the forward command.
-/// </summary>
-public void Forward(float spd) {
-    // If carriage is already in motion, then stop it.
-    if(isMoving){
-       Brake(true);
-       Echo("Stopping.");
-       return;
-    }
-
-    if(spd != 0.0f){
-       Echo("Going!");
-       isMoving = true;
-       Brake(false);
-    }
-
-
-    foreach(IMyMotorSuspension wheel in wheels){
-       wheel.PropulsionOverride = spd;
-    }
-    Echo("Propulsion Override: " + spd);
-}
-
-/// <summary>
-/// Handles the back command.
-/// </summary>
-public void Back(float spd) {
-    Forward(-spd);
-}
-
-/// <summary>
-/// Raises piston one step (0.5 meters).
-/// </summary>
-public void StepUp() {
-   piston.MinLimit = piston.CurrentPosition - pistonStep;
-   piston.MaxLimit = piston.MinLimit;
-   piston.Retract();
-   Echo("Piston extending to " + piston.MinLimit + " meters.");
-   Echo("Piston Highest Position " + piston.LowestPosition + " meters.");
-}
-
-/// <summary>
-/// Raises piston.
-/// </summary>
-public void Up() {
-   if(piston.Status == PistonStatus.Retracting){
-      piston.MinLimit = piston.CurrentPosition;
-   }else{
-      Echo("Piston is retracting.");
-      piston.MinLimit = piston.LowestPosition;
-      piston.Retract();
-   }
-}
-
-/// <summary>
-/// Lowers piston one step (0.5 meters).
-/// </summary>
-public void StepDown() {
-   piston.MaxLimit = piston.CurrentPosition + pistonStep;
-   piston.MinLimit = piston.MaxLimit;
-   piston.Extend();
-   Echo("Piston retracting to " + piston.MaxLimit + " meters.");
-   Echo("Piston Lowest Position " + piston.HighestPosition + " meters.");
-   Echo("Piston Status: " + piston.Status.ToString());
-}
-
-/// <summary>
-/// Lowers piston.
-/// </summary>
-public void Down() {
-   if(piston.Status == PistonStatus.Extending){
-      piston.MaxLimit = piston.CurrentPosition;
-      Echo("Piston stopped.");
-   }else{
-      Echo("Piston is extending.");
-      piston.MaxLimit = piston.HighestPosition;
-      piston.Extend();
-   }
-}
-
-/// <summary>
-/// Toggles brakes on/off.
-/// <param name="apply">boolean indicating whether brakes are to be applied</param>
-/// </summary>
-public void Brake(bool apply) {
-    
-    if(apply){
-       isMoving = false;
-       Forward(0.0f); // Reduce wheel speed to 0
-    }
-    // Apply brakes to all wheels.
-    foreach(IMyMotorSuspension wheel in wheels){
-       wheel.Brake = apply;
-    }
-    Echo("Brakes Engaged: " + apply);
-}
-
-/// <summary>
-/// Dock carriage to connector.
-/// <param name="dock">obsolete (TODO: Remove)</param>
-/// </summary>
-public void Dock(bool dock) {
-    if(dockingConnector != null){
-       Brake(true);
-       dockingConnector.ToggleConnect();
-       Echo("Connector Status: " + dockingConnector.Status.ToString());
-    }else{
-       Echo("ERROR: No docking connector detected.");
-    }
-
-}
-
-/// <summary>
-/// Set Override Speed.
-/// <param name="speed">Override Speed as a percentage [0,1]</param>
-/// </summary>
-public void SetSpeed(float speed) {
-   speedOverride = speed;
-}
-
-/// <summary>
-/// Raise hinge.
-/// </summary>
-public void HingeUp() {
-   if(!toolHinge.RotorLock) {
-      toolHinge.TargetVelocityRPM = 0.0f;
-      toolHinge.RotorLock = true;
-      Runtime.UpdateFrequency = STOP_RATE;
-      return;
-   }
-
-
-   if(toolHinge.Angle > toolHinge.LowerLimitDeg) {
-      toolHinge.RotorLock = false;
-      toolHinge.TargetVelocityRPM = -2.0f;
-      Runtime.UpdateFrequency = SAMPLE_RATE;
-   }
-   
-   /* Hinge Fields and Methods
-   toolHinge.LowerLimitDeg = 0.0f;
-   toolHinge.UpperLimitDeg = 0.0f;
-   toolHinge.Torque = 20.0f; // Newton-meters?
-   toolHinge.RotorLock = true;
-   toolHinge.RotateToAngle(MyRotationDirection,float angle, float absoluteVelocityRpm);
-   toolHinge.Angle
-   */
-}
-
-/// <summary>
-/// Lower hinge.
-/// </summary>
-public void HingeDown() {
-   if(!toolHinge.RotorLock) {
-      toolHinge.TargetVelocityRPM = 0.0f;
-      toolHinge.RotorLock = true;
-      Runtime.UpdateFrequency = STOP_RATE;
-      return;
-   }
-
-   
-
-   if(toolHinge.Angle < toolHinge.UpperLimitDeg) {
-      toolHinge.RotorLock = false;
-      toolHinge.TargetVelocityRPM = 2.0f;
-      Runtime.UpdateFrequency = SAMPLE_RATE;
-   }
-}
-
-/// <summary>
-/// Report hinge angle.
-/// </summary>
-private void ReportHingeAngle(){
-   float angle = toolHinge.Angle*(180.0f/Math.PI);
-   string payload = "--display \"Tool Hinge Angle: " + angle.ToString() + "\"";
-   Echo(payload);
-   nic.Send("M-Station","ProgBlockTestBedB (M-Station)",payload);
-}
-
-
-/// <summary>
-/// Toggle Welder.
-/// </summary>
-public void ToggleWelder() {
-   welder.Enabled = welder.Enabled ? false : true;
-}
-
-/// <summary>
-/// Toggle Mag Plate Lock.
-/// </summary>
-public void ToggleMagPlate() {
-   magPlate.ToggleLock();
-}
-
-
-
-private List<IMyMotorSuspension> wheels = new List<IMyMotorSuspension>();
-private IMyShipConnector dockingConnector;
-private IMyExtendedPistonBase piston;
-private IMyMotorAdvancedStator toolHinge;
-private IMyShipWelder welder; // Enabled = true/false.
-private IMyLandingGear magPlate;
-
-public Program() {
-
-    nic = new GridNIC(this);
-
-    // Register command line arguments
-    argParser.RegisterArg("forward", typeof(float), false, false); // Forward movement
-    argParser.RegisterArg("fwd", typeof(bool), false, false); // Forward movement at default speed
-    argParser.RegisterArg("back", typeof(float), false, false); // Backward movement
-    argParser.RegisterArg("bck", typeof(bool), false, false); // Backward movement at default speed
-    argParser.RegisterArg("stepup", typeof(bool), false, false); // Raise piston one step
-    argParser.RegisterArg("stepdown", typeof(bool), false, false); // Lower piston one step
-    argParser.RegisterArg("up", typeof(bool), false, false); // Raise piston
-    argParser.RegisterArg("down", typeof(bool), false, false); // Lower piston
-    argParser.RegisterArg("brake", typeof(bool), false, false); // Apply brakes
-    argParser.RegisterArg("dock", typeof(bool), false, false); // Apply E-Brake and dock
-    argParser.RegisterArg("speed", typeof(float), false, false); // Set speed override
-    argParser.RegisterArg("hinge_up", typeof(bool), false, false); // Raise tool hinge
-    argParser.RegisterArg("hinge_dwn", typeof(bool), false, false); // Lower tool hinge
-    argParser.RegisterArg("weld", typeof(bool), false, false); // Toggle welder
-    argParser.RegisterArg("toggle_mag_lock", typeof(bool), false, false); // Toggle mag plate
-
-    
-    argParser.OnlyAllowSingleArg = true;
-
-    // Register config parameters
-    ConfigFile.RegisterProperty("wheels", ConfigValueType.String, "Wheels (Trolley)");
-    ConfigFile.RegisterProperty("connector", ConfigValueType.String, "ConnectorDock (Trolley)");
-    ConfigFile.RegisterProperty("piston", ConfigValueType.String, "V-Piston (Trolley)");
-    ConfigFile.RegisterProperty("tool_hinge", ConfigValueType.String, "ToolHinge (Trolley)");
-    ConfigFile.RegisterProperty("welder", ConfigValueType.String, "Welder (Trolley)");
-    ConfigFile.RegisterProperty("mag_plate", ConfigValueType.String, "MagPlate (Trolley)");
-
-    Echo("wheels: " + ConfigFile.Get<string>("wheels"));
-
-    // Grab the Block Group that includes all accessible turrets. Do all of this here in the ctor
-    // so we don't allocate new memory every time the main script executes.
-    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("wheels"))).GetBlocksOfType<IMyMotorSuspension>(wheels);
-    dockingConnector = (IMyShipConnector)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("connector"));
-
-    // These components are not present in end truck assemblies.  
-    try{
-       piston = (IMyExtendedPistonBase)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("piston"));
-       toolHinge = (IMyMotorAdvancedStator)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("tool_hinge"));
-       welder = (IMyShipWelder)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("welder"));
-       magPlate = (IMyLandingGear)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("mag_plate"));
-    }catch(Exception e){
-       Echo("WARNING: No piston/hinge/welder/mag-plate detected." + e.ToString());
-       throw;
-    }
-
-    // Initialize the program
-    Runtime.UpdateFrequency = STOP_RATE;
-    gridRefBlock = null;
-    shipRefBlock = FindShipRefBlock(this);
-    if (shipRefBlock == null) {
-        return;
-    }
-
-}
-
-public void Main(string args) {
-    ReportHingeAngle();
-
-    // Parse the input argument string.
-    if (!argParser.Parse(args))
-    {
-        // Output errors if parsing fails.
-        foreach (string error in argParser.Errors)
-        {
-            Echo("Error: " + error);
-        }
-        return;
-    }
-
-    // Iterate over parsed arguments using the iterator and a switch statement.
-    foreach (var kvp in argParser.GetParsedArgs())
-    {
-        switch (kvp.Key)
-        {
-            case "--forward":
-                Forward((float)kvp.Value);
-                break;
-            case "--fwd":
-                Forward(speedOverride);
-                break;
-            case "--back":
-                Back((float)kvp.Value);
-                break;
-            case "--bck":
-                Back(speedOverride);
-                break;
-            case "--stepup":
-                StepUp();
-                break;
-            case "--stepdown":
-                StepDown();
-                break;
-            case "--up":
-                Up();
-                break;
-            case "--down":
-                Down();
-                break;
-            case "--brake":
-                bool apply = (bool)kvp.Value;
-                Brake(apply);
-                break;
-            case "--dock":
-                bool dock = (bool)kvp.Value;
-                Dock(dock);
-                break;
-            case "--speed":
-                float speed = (float)kvp.Value;
-                SetSpeed(speed);
-                break;
-            case "--hinge_up":
-                HingeUp();
-                break;
-            case "--hinge_dwn":
-                HingeDown();
-                break;
-            case "--weld":
-                ToggleWelder();
-                break;
-            case "--toggle_mag_lock":
-                ToggleMagPlate();
-                break;
-            default:
-                Echo("Unknown argument: " + kvp.Key);
-                break;
-        }
-    }
-}
-
