@@ -1,3 +1,5 @@
+// This script was a hack just to facilitate data transfer.
+// This script is no longer relevant.
 private GridNIC nic;
 private List<IMyTextPanel> displays = new List<IMyTextPanel>();
 private string DISPLAY_TEXT_PANEL_TAG = "[STATUS]";
