@@ -7,7 +7,6 @@ public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
 // Create an instance of ArgParser.
 ArgParser argParser = new ArgParser();
 
-
 private List<IMyMotorSuspension> wheels = new List<IMyMotorSuspension>();
 private IMyShipConnector dockingConnector;
 private IMyExtendedPistonBase piston;
@@ -15,7 +14,6 @@ private IMyMotorAdvancedStator toolHinge;
 private IMyShipWelder welder; // Enabled = true/false.
 private IMyLandingGear magPlate;
 private string statusBroadCastTag = "[GANTRY_STATUS]";
-private string inventoryBroadCastTag = "[GANTRY_INVENTORY]";
 
 public Program() {
 
@@ -33,7 +31,6 @@ public Program() {
     argParser.RegisterArg("hinge_dwn", typeof(bool), false, false); // Lower tool hinge
     argParser.RegisterArg("weld", typeof(bool), false, false); // Toggle welder
     argParser.RegisterArg("toggle_mag_lock", typeof(bool), false, false); // Toggle mag plate
-
     
     argParser.OnlyAllowSingleArg = true;
 
@@ -45,8 +42,7 @@ public Program() {
     ConfigFile.RegisterProperty("welder", ConfigValueType.String, "Welder (Trolley)");
     ConfigFile.RegisterProperty("mag_plate", ConfigValueType.String, "MagPlate (Trolley)");
     ConfigFile.RegisterProperty("statusTag", ConfigValueType.String, "[GANTRY_STATUS]");
-    ConfigFile.RegisterProperty("inventoryTag", ConfigValueType.String, "[GANTRY_INVENTORY]");
-
+    
     Echo("wheels: " + ConfigFile.Get<string>("wheels"));
 
     // Grab the Block Group that includes all accessible turrets. Do all of this here in the ctor
@@ -55,9 +51,7 @@ public Program() {
     dockingConnector = (IMyShipConnector)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("connector"));
 
     statusBroadCastTag = ConfigFile.Get<string>("statusTag");
-    inventoryBroadCastTag = ConfigFile.Get<string>("inventoryTag");
-
-
+    
     // These components are not present in end truck assemblies.  
     try{
        piston = (IMyExtendedPistonBase)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("piston"));
@@ -76,9 +70,7 @@ public Program() {
     if (shipRefBlock == null) {
         return;
     }
-
 }
-
 
 public void Main(string args) {
 
@@ -161,7 +153,6 @@ public static IMyRemoteControl FindShipRefBlock(MyGridProgram program) {
 
 private float speedOverride = 0.01f;
 private bool isMoving = false;
-
 
 /// <summary>
 /// Handles the forward command.
@@ -258,7 +249,6 @@ public void Dock(bool dock) {
     }else{
        Echo("ERROR: No docking connector detected.");
     }
-
 }
 
 /// <summary>
@@ -288,7 +278,6 @@ public void HingeUp() {
       return;
    }
 
-
    if(toolHinge.Angle > toolHinge.LowerLimitDeg) {
       toolHinge.RotorLock = false;
       toolHinge.TargetVelocityRPM = -2.0f;
@@ -316,8 +305,6 @@ public void HingeDown() {
       return;
    }
 
-   
-
    if(toolHinge.Angle < toolHinge.UpperLimitDeg) {
       toolHinge.RotorLock = false;
       toolHinge.TargetVelocityRPM = 2.0f;
@@ -336,7 +323,6 @@ private void GetHingeAngle(ref StringBuilder sb){
 
 }
 
-
 /// <summary>
 /// Toggle Welder.
 /// </summary>
@@ -351,7 +337,6 @@ public void ToggleMagPlate() {
    magPlate.ToggleLock();
 }
 
-
 /// <summary>
 /// Report status of gantry crane systems.
 /// </summary>
@@ -362,14 +347,6 @@ private void ReportStatus(){
    statusStr.AppendLine("Piston Position: " + piston.CurrentPosition.ToString("F", new System.Globalization.CultureInfo("en-US")) + "m");
    statusStr.AppendLine("Update Freq: " + Runtime.UpdateFrequency.ToString());
    IGC.SendBroadcastMessage(statusBroadCastTag, statusStr.ToString());
-}
-
-/// <summary>
-/// Report inventory of cargo containers.
-/// </summary>
-private void ReportInventory(){
-   StringBuilder statusStr = new StringBuilder();
-   IGC.SendBroadcastMessage(inventoryBroadCastTag, statusStr.ToString());
 }
 
 /* v ---------------------------------------------------------------------- v */ 
