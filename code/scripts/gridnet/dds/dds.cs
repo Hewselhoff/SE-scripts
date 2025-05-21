@@ -84,11 +84,7 @@ public void Main(string argument, UpdateType updateSource)
 
         // this script doesn't have anything to do
     }
-
-    foreach(var display in displays[_STATUSbroadCastTag]){
-        display.ContentType = ContentType.TEXT_AND_IMAGE;
-        display.WriteText("TEST");
-    }
+ 
 }
 
 private List<IMyTextPanel> FindDisplayPanels(string tag)
