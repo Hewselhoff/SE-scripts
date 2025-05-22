@@ -15,6 +15,10 @@
  * PB that hosts this script. This script must be recompiled following any
  * changes made to CustomData.
  *
+ * TODO: Add capability to write messages from multiple channels to a single
+ * display and implement it so that content of latest message is preserved
+ * on the display for all channels.
+ *
  * This script uses the Wico Modular IGC Example code (see below) for its IGC 
  * functions.
  *
@@ -34,6 +38,7 @@
 WicoIGC _wicoIGC;
 private List<string> broadcastTags = new List<string>();
 private Dictionary<string, List<IMyTextPanel>> displays = new Dictionary<string, List<IMyTextPanel>>();
+//private Dictionary<string, StringBuilder>> buffers = new Dictionary<string, StringBuilder>();
 public ConfigFile config;
 
 /// <summary>
@@ -102,16 +107,22 @@ public void Main(string argument, UpdateType updateSource){
     }
 }
 
+/// <summary>
+/// Discover display panels associated with the specified broadcast channel.
+/// <param name="channelTag">The tag for the channel. This should be unique to the use of the channel.</param>
+/// <returns> List<IMyTextPanels> - List of display panels associated with provided broadcast channel.</returns>
+/// </summary>
 private List<IMyTextPanel> FindDisplayPanels(string tag){
     List<IMyTextPanel> panels = new List<IMyTextPanel>();
     GridTerminalSystem.GetBlocksOfType(panels, p => p.CustomName.Contains(tag) && p.IsSameConstructAs(Me));
-    foreach(var panel in panels){
-       Echo("Panel: " + panel.CustomName);
-    }
-    
     return panels;
 }        
 
+/// <summary>
+/// Write message content to the relevant displays.
+/// <param name="tag"> Broadcast channel tag that specifies which displays are to be updated.</param>
+/// <param name="data"> Message content that is to be written to the displays.</param>
+/// </summary>
 private void UpdateDisplays(string tag, string data){
     // If we have display panels, update them
     foreach(var display in displays[tag]){
@@ -120,6 +131,10 @@ private void UpdateDisplays(string tag, string data){
     }
 }
 
+/// <summary>
+/// Register handlers for messages on the broadcast channels.
+/// </summary>
+private void UpdateDisplays(string tag, string data){
 private void InitMessageHandlers(){
     // Create handlers for messages received on the broadcast channels.
     foreach(var broadcastTag in broadcastTags){
@@ -127,7 +142,10 @@ private void InitMessageHandlers(){
     }
 }
 
-// Handler for the broadcast messages.
+/// <summary>
+/// Handler for the broadcast messages.
+/// <param name="msg"> MyIGCMessage object containing meta data and message payload.</param>
+/// </summary>
 private void BroadcastHandler(MyIGCMessage msg){
     // NOTE: called on ALL received messages; not just 'our' tag
 
