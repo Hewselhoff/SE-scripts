@@ -12,12 +12,18 @@
  * provide it with the appropriate broadcast tag and message payload.
  *
  * CONFIGURATION: Broadcast Tags must be specified in the CustomData of the
- * PB that hosts this script. This script must be recompiled following any
- * changes made to CustomData.
+ * PB that hosts this script. E.g.,
+ *
+ *           Channels: [CHANNEL_A], [CHANNEL_B]
+ *
+ * This script must be recompiled following any changes made to CustomData.
  *
  * TODO: Add capability to write messages from multiple channels to a single
  * display and implement it so that content of latest message is preserved
  * on the display for all channels.
+ *
+ * Mark message displays with a single tag. Obtain their broadcast channel(s)
+ * from their CustomData!!!!!
  *
  * This script uses the Wico Modular IGC Example code (see below) for its IGC 
  * functions.
@@ -36,10 +42,22 @@
  */
 
 WicoIGC _wicoIGC;
+// This tag must appear in the CustomNames of IMyTextPanels that 
+// are reserved for displaying broadcast messages. The channel(s)
+// they subscribe to must be listed in their CustomData fields.
+private string DISPLAY_TAG = "[MSG_DISPLAY]";
+// These are the broadcast channels listed in this script's
+// PB's config in its CustomData field.
 private List<string> broadcastTags = new List<string>();
+// List of displays for each broadcast channel/tag. Note that
+// there will be overlap for displays that subscribe to multiple
+// channels and that's ok.
 private Dictionary<string, List<IMyTextPanel>> displays = new Dictionary<string, List<IMyTextPanel>>();
-//private Dictionary<string, StringBuilder>> buffers = new Dictionary<string, StringBuilder>();
+// Dictionary with keys that are broadcast channel tags and values that are strings 
+// that hold the content of the most recent message that was received.
+private Dictionary<string, string> buffers = new Dictionary<string, string>();
 public ConfigFile config;
+
 
 /// <summary>
 /// The combined set of UpdateTypes that count as a 'trigger'
@@ -66,9 +84,11 @@ public Program(){
     broadcastTags = config.Get<List<string>>("BroadcastTags"); 
 
     // Get displays that have been labeled to display messages
-    // for specific broadcast tags (channels.)
+    // for specific broadcast tags (channels.) Also init
+    // the buffers.
     foreach(var broadcastTag in broadcastTags){
        displays[broadcastTag] = FindDisplayPanels(broadcastTag);
+       buffers[broadcastTag] = "";
     }
 
     // cause ourselves to run again so we can do the init
@@ -114,8 +134,16 @@ public void Main(string argument, UpdateType updateSource){
 /// </summary>
 private List<IMyTextPanel> FindDisplayPanels(string tag){
     List<IMyTextPanel> panels = new List<IMyTextPanel>();
-    GridTerminalSystem.GetBlocksOfType(panels, p => p.CustomName.Contains(tag) && p.IsSameConstructAs(Me));
-    return panels;
+    GridTerminalSystem.GetBlocksOfType(panels, p => p.CustomName.Contains(DISPLAY_TAG) && p.IsSameConstructAs(Me));
+    List<IMyTextPanel> subscribedPanels = new List<IMyTextPanel>();
+    foreach(var panel in panels){
+       List<string> channels = GetDisplayChannels(panel);
+       if(channels.Count > 0 && channels.Contains(tag)){
+          AddChannelBuffer(panel, tag);
+          subscribedPanels.Add(panel);
+       }
+    }
+    return subscribedPanels;
 }        
 
 /// <summary>
@@ -126,15 +154,142 @@ private List<IMyTextPanel> FindDisplayPanels(string tag){
 private void UpdateDisplays(string tag, string data){
     // If we have display panels, update them
     foreach(var display in displays[tag]){
-        display.ContentType = ContentType.TEXT_AND_IMAGE;
-        display.WriteText(data);
+       // Check buffer for this tag and use StringBuilder object to update
+       // the message data for the provided channel.
+       StringBuilder sb = new StringBuilder();
+       foreach(var channel in GetDisplayChannels(display, tag)){
+          if(channel == tag){
+             sb.AppendLine(data);
+             UpdateChannelBuffer(display, tag, data);
+          }else{
+             sb.AppendLine(GetChannelBuffer(display, channel));
+          }
+       }
+       display.ContentType = ContentType.TEXT_AND_IMAGE;
+       display.WriteText(sb.ToString());
     }
+}
+
+/// <summary>
+/// Update display's buffer text for the provided channel.
+/// <param name="display"> IMyTextPanel to update buffer for.</param>
+/// <param name="tag"> string containing the broadcast channel tag.</param>
+/// <param name="data"> Message content that is to be written buffer.</param>
+/// </summary>
+/// Need a way to track parsing phases in UpdateChannelBuffer(). 
+private enum Semaphore {LOOKING, REPLACE, REPLACED, DONE};
+private void UpdateChannelBuffer(IMyTextPanel display, string tag, string data){
+   var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+   StringBuilder sb = new StringBuilder();
+   Semaphore semaphore = Semaphore.LOOKING;
+   foreach(var line in lines){
+      // If we hit the opening tag for the buffer, then signal
+      // that the following lines are to be overwritten with
+      // the new data and make sure the opening tag is included.
+      if(line.TrimStart().StartsWith("<"+tag.ToLower()+">")){
+         semaphore = Semaphore.REPLACE;
+         sb.AppendLine(line);
+         continue;
+      // If the closing tag for the buffer is hit, then signal that
+      // we are done overwriting the buffer and make sure the closing
+      // tag is included.
+      }else if(line.TrimStart().StartsWith("</"+tag.ToLower()+">")){
+         semaphore = Semaphore.DONE;
+         sb.AppendLine(line);
+         continue;
+      // If we have found the buffer, then overwrite it.
+      }else if(semaphore == Semaphore.REPLACE){
+         semaphore = Semaphore.REPLACED;
+         sb.AppendLine(data);
+         continue;
+      }
+
+      // If this line is not part of the buffer, then make sure it
+      // gets transfered.
+      if(semaphore == Semaphore.LOOKING || semaphore == Semaphore.DONE ){
+         sb.AppendLine(line);
+      }
+   }
+
+   display.CustomData = sb.ToString();
+}
+
+/// <summary>
+/// Get the display's buffer text for the provided channel.
+/// <param name="display"> IMyTextPanel to pull buffer from.</param>
+/// <param name="tag"> string containing the broadcast channel tag.</param>
+/// </summary>
+private string GetChannelBuffer(IMyTextPanel display, string tag){
+   var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+   StringBuilder sb = new StringBuilder();
+   bool readBuffer = false;
+   foreach(var line in lines){
+      if(line.TrimStart().StartsWith("<"+tag.ToLower()+">")){
+         readBuffer = true;
+         continue;
+      }else if(line.TrimStart().StartsWith("</"+tag.ToLower()+">")){
+         break;
+      }
+
+      if(readBuffer){
+         sb.AppendLine(line);
+      }
+   }
+   return sb.ToString();
+}
+
+/// <summary>
+/// If the provided IMyTextPanel does not have a buffer for the specified
+/// broadcast channel tag, then add it.
+/// <param name="display"> IMyTextPanel to add buffer to.</param>
+/// <param name="tag"> string containing the broadcast channel tag.</param>
+/// </summary>
+private void AddChannelBuffer(IMyTextPanel display, string tag){
+   var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+   // Check to see if we already have a buffer for this channel.
+   foreach(var line in lines){
+      if(line.Contains(tag.ToLower())){
+         return;
+      }
+   }
+   // If we don't have a buffer, then add one.
+   string channelTagId = tag.ToLower();
+   string channelTag = "\n<" + channelTagId + ">" + tag + " Buffer</" + channelTagId + ">";
+   String.Concat(display.CustomData, channelTag); 
+}
+
+/// <summary>
+/// Obtain list of broadcast channels for provided display.
+/// <param name="display"> IMyTextPanel whose channel tags must be extracted.</param>
+/// <returns> List<string> - List of broadcast channels for the display.</returns>
+/// </summary>
+private List<string> GetDisplayChannels(IMyTextPanel display){
+   // Parse CustomData for this display in order to obtain channels.
+   var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+   List<string> channels = new List<string>();
+   foreach(var line in lines){
+      // Skip blank or commented lines.
+      if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith("#")){
+         continue;
+      }
+      // If the line bearing the channel names is found.
+      if(line.TrimStart().StartsWith("Channels")){
+         var fields = line.Split(":",StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+         if(fields.Length == 2){
+             channels.AddRange(fields[1].Split(",",StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+         }else{
+            Echo("WARNING: No channel tags defined for " + display.CustomName + "!");
+         }
+         break;
+      }
+   }
+
+   return channels;
 }
 
 /// <summary>
 /// Register handlers for messages on the broadcast channels.
 /// </summary>
-private void UpdateDisplays(string tag, string data){
 private void InitMessageHandlers(){
     // Create handlers for messages received on the broadcast channels.
     foreach(var broadcastTag in broadcastTags){
