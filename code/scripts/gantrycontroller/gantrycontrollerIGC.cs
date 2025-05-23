@@ -26,6 +26,7 @@ public Program() {
     argParser.RegisterArg("down", typeof(bool), false, false); // Lower piston
     argParser.RegisterArg("brake", typeof(bool), false, false); // Apply brakes
     argParser.RegisterArg("dock", typeof(bool), false, false); // Apply E-Brake and dock
+    argParser.RegisterArg("home", typeof(bool), false, false); // Return carriage to docking position
     argParser.RegisterArg("speed", typeof(float), false, false); // Set speed override
     argParser.RegisterArg("hinge_up", typeof(bool), false, false); // Raise tool hinge
     argParser.RegisterArg("hinge_dwn", typeof(bool), false, false); // Lower tool hinge
@@ -35,29 +36,29 @@ public Program() {
     argParser.OnlyAllowSingleArg = true;
 
     // Register config parameters
-    ConfigFile.RegisterProperty("wheels", ConfigValueType.String, "Wheels (Trolley)");
-    ConfigFile.RegisterProperty("connector", ConfigValueType.String, "ConnectorDock (Trolley)");
-    ConfigFile.RegisterProperty("piston", ConfigValueType.String, "V-Piston (Trolley)");
-    ConfigFile.RegisterProperty("tool_hinge", ConfigValueType.String, "ToolHinge (Trolley)");
-    ConfigFile.RegisterProperty("welder", ConfigValueType.String, "Welder (Trolley)");
-    ConfigFile.RegisterProperty("mag_plate", ConfigValueType.String, "MagPlate (Trolley)");
-    ConfigFile.RegisterProperty("statusTag", ConfigValueType.String, "[GANTRY_STATUS]");
+    ConfigFile.RegisterProperty("Wheels", ConfigValueType.String, "Wheels (Trolley)");
+    ConfigFile.RegisterProperty("Connector", ConfigValueType.String, "ConnectorDock (Trolley)");
+    ConfigFile.RegisterProperty("Piston", ConfigValueType.String, "V-Piston (Trolley)");
+    ConfigFile.RegisterProperty("ToolHinge", ConfigValueType.String, "ToolHinge (Trolley)");
+    ConfigFile.RegisterProperty("Welder", ConfigValueType.String, "Welder (Trolley)");
+    ConfigFile.RegisterProperty("MagPlate", ConfigValueType.String, "MagPlate (Trolley)");
+    ConfigFile.RegisterProperty("StatusTag", ConfigValueType.String, "[GANTRY_STATUS]");
     
-    Echo("wheels: " + ConfigFile.Get<string>("wheels"));
+    Echo("Wheels: " + ConfigFile.Get<string>("Wheels"));
 
     // Grab the Block Group that includes all accessible turrets. Do all of this here in the ctor
     // so we don't allocate new memory every time the main script executes.
-    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("wheels"))).GetBlocksOfType<IMyMotorSuspension>(wheels);
-    dockingConnector = (IMyShipConnector)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("connector"));
+    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("Wheels"))).GetBlocksOfType<IMyMotorSuspension>(wheels);
+    dockingConnector = (IMyShipConnector)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("Connector"));
 
-    statusBroadCastTag = ConfigFile.Get<string>("statusTag");
+    statusBroadCastTag = ConfigFile.Get<string>("StatusTag");
     
     // These components are not present in end truck assemblies.  
     try{
-       piston = (IMyExtendedPistonBase)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("piston"));
-       toolHinge = (IMyMotorAdvancedStator)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("tool_hinge"));
-       welder = (IMyShipWelder)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("welder"));
-       magPlate = (IMyLandingGear)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("mag_plate"));
+       piston = (IMyExtendedPistonBase)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("Piston"));
+       toolHinge = (IMyMotorAdvancedStator)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("ToolHinge"));
+       welder = (IMyShipWelder)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("Welder"));
+       magPlate = (IMyLandingGear)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("MagPlate"));
     }catch(Exception e){
        Echo("WARNING: No piston/hinge/welder/mag-plate detected." + e.ToString());
        throw;
@@ -116,6 +117,9 @@ public void Main(string args) {
                 bool dock = (bool)kvp.Value;
                 Dock(dock);
                 break;
+            case "--home":
+                Home();
+                break;
             case "--speed":
                 float speed = (float)kvp.Value;
                 SetSpeed(speed);
@@ -162,6 +166,8 @@ public void Forward(float spd) {
     if(isMoving){
        Brake(true);
        Echo("Stopping.");
+       Runtime.UpdateFrequency = STOP_RATE;
+       isMoving = false;
        return;
     }
 
@@ -169,6 +175,7 @@ public void Forward(float spd) {
        Echo("Going!");
        isMoving = true;
        Brake(false);
+       Runtime.UpdateFrequency = SAMPLE_RATE;
     }
 
 
@@ -246,9 +253,25 @@ public void Dock(bool dock) {
        Brake(true);
        dockingConnector.ToggleConnect();
        Echo("Connector Status: " + dockingConnector.Status.ToString());
+       Runtime.UpdateFrequency = STOP_RATE;
     }else{
        Echo("ERROR: No docking connector detected.");
     }
+}
+
+/// <summary>
+/// Return carriage to docking position.
+/// <returns> True if carriage has reached docking position.</returns>
+/// </summary>
+private bool Home() {
+   if((dockingConnector.Status != MyShipConnectorStatus.Connectable) &&
+      !dockingConnector.IsConnected){
+      Back(speedOverride);
+      return false;
+   }else{
+      Dock(true);
+      return true;
+   }
 }
 
 /// <summary>
@@ -346,6 +369,8 @@ private void ReportStatus(){
    // The ToString() formats the value to round to 2 decimal places.
    statusStr.AppendLine("Piston Position: " + piston.CurrentPosition.ToString("F", new System.Globalization.CultureInfo("en-US")) + "m");
    statusStr.AppendLine("Update Freq: " + Runtime.UpdateFrequency.ToString());
+   statusStr.AppendLine("Connector Status: " + dockingConnector.Status.ToString());
+   statusStr.AppendLine("Carriage Speed: " + shipRefBlock.GetShipSpeed().ToString("F3", new System.Globalization.CultureInfo("en-US")) + " m/s");
    IGC.SendBroadcastMessage(statusBroadCastTag, statusStr.ToString());
 }
 
