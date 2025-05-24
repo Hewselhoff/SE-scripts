@@ -645,15 +645,15 @@ namespace SpaceEngineers.UWBlockPrograms.CamlApiExample {
             // Register root-level configuration properties.
             config.RegisterProperty("anInteger", ConfigValueType.Int, 42);
             config.RegisterProperty("aFloat", ConfigValueType.Float, 3.14f);
-            config.RegisterProperty("anIntList", ConfigValueType.IntList, new List<int> { 1, 1, 2, 3, 5, 8, 13 });
+            config.RegisterProperty("anIntList", ConfigValueType.ListInt, new List<int> { 1, 1, 2, 3, 5, 8, 13 });
 
             // Register a sub configuration.
             config.RegisterSubConfig("subConfig");
 
             // Register properties for the sub config.
             config.RegisterProperty("subConfig", "aString", ConfigValueType.String, "Foo");
-            config.RegisterProperty("subConfig", "aFloatList", ConfigValueType.FloatList, new List<float> { 0.25f, 0.50f, 0.75f });
-            config.RegisterProperty("subConfig", "aStringList", ConfigValueType.StringList, new List<string> { "Bar", "Baz" });
+            config.RegisterProperty("subConfig", "aFloatList", ConfigValueType.ListFloat, new List<float> { 0.25f, 0.50f, 0.75f });
+            config.RegisterProperty("subConfig", "aStringList", ConfigValueType.ListString, new List<string> { "Bar", "Baz" });
             // set logger to program Echo
             config.Logger = message => this.Echo(message);
 
