@@ -1,6 +1,6 @@
 public IMyRemoteControl shipRefBlock;
 public IMyShipConnector gridRefBlock;
-public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
+public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update10;
 public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
 public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
 
@@ -199,6 +199,7 @@ public void Up() {
    if(piston.Status == PistonStatus.Retracting){
       SetPistonVelocity(0.0f);
       piston.MinLimit = piston.CurrentPosition;
+      Echo("Piston stopped.");
       Runtime.UpdateFrequency = STOP_RATE;
    }else{
       Echo("Piston is retracting.");
@@ -298,6 +299,7 @@ public void HingeUp() {
       toolHinge.TargetVelocityRPM = 0.0f;
       toolHinge.RotorLock = true;
       Runtime.UpdateFrequency = STOP_RATE;
+      Echo("Hinge stopped.");
       return;
    }
 
@@ -325,6 +327,7 @@ public void HingeDown() {
       toolHinge.TargetVelocityRPM = 0.0f;
       toolHinge.RotorLock = true;
       Runtime.UpdateFrequency = STOP_RATE;
+      Echo("Hinge stopped.");
       return;
    }
 
@@ -342,7 +345,7 @@ private void GetHingeAngle(ref StringBuilder sb){
    int angle = Convert.ToInt32(MathHelper.ToDegrees(toolHinge.Angle));
    // The degree symbol (°) can be inserted by holding Alt and entering 176 
    // in the num-pad.
-   sb.AppendLine("Hinge Angle: " + angle.ToString() + "°");
+   sb.AppendLine("Hinge Angle:      " + angle.ToString() + "°");
 
 }
 
@@ -367,10 +370,10 @@ private void ReportStatus(){
    StringBuilder statusStr = new StringBuilder();
    GetHingeAngle(ref statusStr);
    // The ToString() formats the value to round to 2 decimal places.
-   statusStr.AppendLine("Piston Position: " + piston.CurrentPosition.ToString("F", new System.Globalization.CultureInfo("en-US")) + "m");
-   statusStr.AppendLine("Update Freq: " + Runtime.UpdateFrequency.ToString());
+   statusStr.AppendLine("Piston Position:  " + piston.CurrentPosition.ToString("F", new System.Globalization.CultureInfo("en-US")) + "m");
+   statusStr.AppendLine("Update Freq:      " + Runtime.UpdateFrequency.ToString());
    statusStr.AppendLine("Connector Status: " + dockingConnector.Status.ToString());
-   statusStr.AppendLine("Carriage Speed: " + shipRefBlock.GetShipSpeed().ToString("F3", new System.Globalization.CultureInfo("en-US")) + " m/s");
+   statusStr.AppendLine("Carriage Speed:    " + shipRefBlock.GetShipSpeed().ToString("F3", new System.Globalization.CultureInfo("en-US")) + " m/s");
    IGC.SendBroadcastMessage(statusBroadCastTag, statusStr.ToString());
 }
 
