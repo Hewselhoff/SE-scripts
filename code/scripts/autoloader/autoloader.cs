@@ -19,11 +19,10 @@ private Dictionary<string, float> _lastComponentAmounts = new Dictionary<string,
 private List<IMyTerminalBlock> _sourceContainers = new List<IMyTerminalBlock>();
 private List<IMyTerminalBlock> _targetContainers = new List<IMyTerminalBlock>();
 
-
+// Constructor
 public Program()
 {
-    // Constructor
-    Runtime.UpdateFrequency = UpdateFrequency.Once;
+    Runtime.UpdateFrequency = UpdateFrequency.Update10;
 
     
     //ConfigFile.RegisterProperty("inventoryTag", ConfigValueType.String, "[GANTRY_INVENTORY]");
@@ -244,7 +243,6 @@ private void UpdateInventoryStatus()
 /// Report inventory of cargo containers.
 /// </summary>
 private void ReportInventory(){
-   StringBuilder statusStr = new StringBuilder();
    IGC.SendBroadcastMessage(BROADCAST_TAG, _outputBuilder.ToString());
 }
 
