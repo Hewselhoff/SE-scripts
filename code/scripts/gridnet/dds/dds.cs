@@ -76,12 +76,14 @@ public Program(){
     // Register properties for the configuration.
     // These are our unique IDs for our messages.  We've defined the 
     // format for the message data (it's just a string)
-    config.RegisterProperty("BroadcastTags", ConfigValueType.StringList, new List<string> {"[GANTRY_STATUS]", "[GANTRY_INVENTORY]"});
+    config.RegisterProperty("BroadcastTags", ConfigValueType.ListString, new List<string>{"[GANTRY_STATUS]", "[GANTRY_INVENTORY]"});
+    
     // Finalize the config to lock the schema.
     config.FinalizeRegistration();
 
     // Get list of Broadcast Tags from ConfigFile.
-    broadcastTags = config.Get<List<string>>("BroadcastTags"); 
+    //broadcastTags = config.Get<List<string>>("BroadcastTags"); 
+    broadcastTags =  new List<string>{"[GANTRY_STATUS]", "[GANTRY_INVENTORY]"};
 
     // Get displays that have been labeled to display messages
     // for specific broadcast tags (channels.) Also init
@@ -101,10 +103,6 @@ public Program(){
 bool _areWeInited=false;
 
 public void Main(string argument, UpdateType updateSource){
-    // Echo some information about 'me' and why we were run
-    Echo("Source=" + updateSource.ToString());
-    Echo("Me=" + Me.EntityId.ToString("X"));
-    Echo(Me.CubeGrid.CustomName);
 
     if(!_areWeInited){
         InitMessageHandlers();
@@ -120,7 +118,7 @@ public void Main(string argument, UpdateType updateSource){
         // STUB: This script does not currently publish messages.
         // if we got a 'trigger' source, send out the received argument
         // IGC.SendBroadcastMessage(_StatusBroadcastTag, argument);
-        // Echo("Sending Message:\n" + argument);
+        // logger.Info("Sending Message:\n" + argument);
     }else if((updateSource & _utUpdates) > 0){
         // it was an automatic update
         // this script doesn't have anything to do
@@ -147,6 +145,28 @@ private List<IMyTextPanel> FindDisplayPanels(string tag){
 }        
 
 /// <summary>
+/// If the provided IMyTextPanel does not have a buffer for the specified
+/// broadcast channel tag, then add it.
+/// <param name="display"> IMyTextPanel to add buffer to.</param>
+/// <param name="tag"> string containing the broadcast channel tag.</param>
+/// </summary>
+private void AddChannelBuffer(IMyTextPanel display, string tag){
+   var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+   // Check to see if we already have a buffer for this channel.
+   string channelTagId = tag.ToLower().Trim(new[] {'[',']'});
+   foreach(var line in lines){
+      // TODO: This could cause problems if the buffer contains mulitple lines.
+      if(line.Contains("<"+channelTagId+">")){
+         return;
+      }
+   }
+   // If we don't have a buffer, then add one. Also, the opening and closing
+   // XML tags will be on their own lines.
+   string channelTags = "\n<"+channelTagId+">\n"+tag+" Channel Buffer Initialized\n</"+channelTagId+">";
+   display.CustomData = String.Concat(display.CustomData.TrimEnd(new[] {'\n','\r','\t'}), channelTags); 
+}
+
+/// <summary>
 /// Write message content to the relevant displays.
 /// <param name="tag"> Broadcast channel tag that specifies which displays are to be updated.</param>
 /// <param name="data"> Message content that is to be written to the displays.</param>
@@ -157,7 +177,8 @@ private void UpdateDisplays(string tag, string data){
        // Check buffer for this tag and use StringBuilder object to update
        // the message data for the provided channel.
        StringBuilder sb = new StringBuilder();
-       foreach(var channel in GetDisplayChannels(display, tag)){
+       foreach(var channel in GetDisplayChannels(display)){
+          sb.AppendLine("======="+channel.Replace("_", " ")+"=======");
           if(channel == tag){
              sb.AppendLine(data);
              UpdateChannelBuffer(display, tag, data);
@@ -181,19 +202,20 @@ private enum Semaphore {LOOKING, REPLACE, REPLACED, DONE};
 private void UpdateChannelBuffer(IMyTextPanel display, string tag, string data){
    var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
    StringBuilder sb = new StringBuilder();
+   string channelTagId = tag.ToLower().Trim(new[] {'[',']'});
    Semaphore semaphore = Semaphore.LOOKING;
    foreach(var line in lines){
       // If we hit the opening tag for the buffer, then signal
       // that the following lines are to be overwritten with
       // the new data and make sure the opening tag is included.
-      if(line.TrimStart().StartsWith("<"+tag.ToLower()+">")){
+      if(line.TrimStart().StartsWith("<"+channelTagId+">")){
          semaphore = Semaphore.REPLACE;
          sb.AppendLine(line);
          continue;
       // If the closing tag for the buffer is hit, then signal that
       // we are done overwriting the buffer and make sure the closing
       // tag is included.
-      }else if(line.TrimStart().StartsWith("</"+tag.ToLower()+">")){
+      }else if(line.TrimStart().StartsWith("</"+channelTagId+">")){
          semaphore = Semaphore.DONE;
          sb.AppendLine(line);
          continue;
@@ -202,12 +224,12 @@ private void UpdateChannelBuffer(IMyTextPanel display, string tag, string data){
          semaphore = Semaphore.REPLACED;
          sb.AppendLine(data);
          continue;
-      }
-
       // If this line is not part of the buffer, then make sure it
-      // gets transfered.
-      if(semaphore == Semaphore.LOOKING || semaphore == Semaphore.DONE ){
-         sb.AppendLine(line);
+      // gets transfered. But NOT empty lines!!!!
+      }else if(semaphore == Semaphore.LOOKING || semaphore == Semaphore.DONE ){
+         if(!string.IsNullOrWhiteSpace(line)){
+            sb.AppendLine(line);
+         }
       }
    }
 
@@ -221,13 +243,14 @@ private void UpdateChannelBuffer(IMyTextPanel display, string tag, string data){
 /// </summary>
 private string GetChannelBuffer(IMyTextPanel display, string tag){
    var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+   string channelTagId = tag.ToLower().Trim(new[] {'[',']'});
    StringBuilder sb = new StringBuilder();
    bool readBuffer = false;
    foreach(var line in lines){
-      if(line.TrimStart().StartsWith("<"+tag.ToLower()+">")){
+      if(line.TrimStart().StartsWith("<"+channelTagId+">")){
          readBuffer = true;
          continue;
-      }else if(line.TrimStart().StartsWith("</"+tag.ToLower()+">")){
+      }else if(line.TrimStart().StartsWith("</"+channelTagId+">")){
          break;
       }
 
@@ -238,25 +261,6 @@ private string GetChannelBuffer(IMyTextPanel display, string tag){
    return sb.ToString();
 }
 
-/// <summary>
-/// If the provided IMyTextPanel does not have a buffer for the specified
-/// broadcast channel tag, then add it.
-/// <param name="display"> IMyTextPanel to add buffer to.</param>
-/// <param name="tag"> string containing the broadcast channel tag.</param>
-/// </summary>
-private void AddChannelBuffer(IMyTextPanel display, string tag){
-   var lines = display.CustomData.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
-   // Check to see if we already have a buffer for this channel.
-   foreach(var line in lines){
-      if(line.Contains(tag.ToLower())){
-         return;
-      }
-   }
-   // If we don't have a buffer, then add one.
-   string channelTagId = tag.ToLower();
-   string channelTag = "\n<" + channelTagId + ">" + tag + " Buffer</" + channelTagId + ">";
-   String.Concat(display.CustomData, channelTag); 
-}
 
 /// <summary>
 /// Obtain list of broadcast channels for provided display.
@@ -274,11 +278,9 @@ private List<string> GetDisplayChannels(IMyTextPanel display){
       }
       // If the line bearing the channel names is found.
       if(line.TrimStart().StartsWith("Channels")){
-         var fields = line.Split(":",StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+         var fields = line.Replace("\n", "").Replace("\r", "").Split(new[] {':'},StringSplitOptions.RemoveEmptyEntries);
          if(fields.Length == 2){
-             channels.AddRange(fields[1].Split(",",StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-         }else{
-            Echo("WARNING: No channel tags defined for " + display.CustomName + "!");
+             channels.AddRange(fields[1].Replace(" ", string.Empty).Split(new[] {','},StringSplitOptions.RemoveEmptyEntries));
          }
          break;
       }
@@ -306,15 +308,10 @@ private void BroadcastHandler(MyIGCMessage msg){
 
     // Only process messages on recognized channels.
     if(!broadcastTags.Contains(msg.Tag)){
-        Echo("WARNING: Unrecognized tag (" + msg.Tag + ").");
         return; // not our message
     }
 
     if(msg.Data is string){
-        Echo("Received Test Message");
-        Echo(" Source=" + msg.Source.ToString("X"));
-        Echo(" Data=\"" + msg.Data + "\"");
-        Echo(" Tag=" + msg.Tag);
         UpdateDisplays(msg.Tag, msg.Data.ToString());
     }
 }
@@ -393,9 +390,9 @@ public class WicoIGC{
     /// </summary>
     public void ProcessIGCMessages(){
         bool bFoundMessages = false;
-        if(_debug) _gridProgram.Echo(_broadcastChannels.Count.ToString() + " broadcast channels");
-        if(_debug) _gridProgram.Echo(_broadcastMessageHandlers.Count.ToString() + " broadcast message handlers");
-        if(_debug) _gridProgram.Echo(_unicastMessageHandlers.Count.ToString() + " unicast message handlers");
+        if(_debug) _gridProgram.Echo(_broadcastChannels.Count.ToString()+" broadcast channels");
+        if(_debug) _gridProgram.Echo(_broadcastMessageHandlers.Count.ToString()+" broadcast message handlers");
+        if(_debug) _gridProgram.Echo(_unicastMessageHandlers.Count.ToString()+" unicast message handlers");
         // TODO: make this a yield return thing if processing takes too long
         do{
             bFoundMessages = false;
@@ -404,8 +401,8 @@ public class WicoIGC{
                     bFoundMessages = true;
                     var msg = channel.AcceptMessage();
                     if(_debug){
-                        _gridProgram.Echo("Broadcast received. TAG:" + msg.Tag);
-                        _debugTextPanel?.WriteText("IGC:" +msg.Tag+" SRC:"+msg.Source.ToString("X")+"\n",true);
+                        _gridProgram.Echo("Broadcast received. TAG:"+msg.Tag);
+                        _debugTextPanel?.WriteText("IGC:"+msg.Tag+" SRC:"+msg.Source.ToString("X")+"\n",true);
                     }
                     foreach(var handler in _broadcastMessageHandlers){
                         handler(msg);
@@ -423,7 +420,7 @@ public class WicoIGC{
                 if(_unicastListener.HasPendingMessage){
                     bFoundMessages = true;
                     var msg = _unicastListener.AcceptMessage();
-                    if(_debug) _gridProgram.Echo("Unicast received. TAG:" + msg.Tag);
+                    if(_debug) _gridProgram.Echo("Unicast received. TAG:"+msg.Tag);
                     foreach(var handler in _unicastMessageHandlers){
                         // Call each handler
                         handler(msg);
@@ -511,12 +508,12 @@ public class ConfigFile
     {
         if (isFinalized)
         {
-            Logger("Cannot register new property after finalization: " + name);
+            Logger("Cannot register new property after finalization: "+name);
             return;
         }
         if (properties.ContainsKey(name))
         {
-            Logger("Property already registered: " + name);
+            Logger("Property already registered: "+name);
             return;
         }
         properties[name] = new ConfigProperty
@@ -536,12 +533,12 @@ public class ConfigFile
     {
         if (isFinalized)
         {
-            Logger("Cannot register new property after finalization: " + subConfigName + "/" + name);
+            Logger("Cannot register new property after finalization: "+subConfigName+"/"+name);
             return;
         }
         if (!subConfigs.ContainsKey(subConfigName))
         {
-            Logger("Sub config '" + subConfigName + "' does not exist. Register the sub config first.");
+            Logger("Sub config '"+subConfigName+"' does not exist. Register the sub config first.");
             return;
         }
         // Forward the registration to the sub config.
@@ -556,12 +553,12 @@ public class ConfigFile
     {
         if (isFinalized)
         {
-            Logger("Cannot register new sub config after finalization: " + name);
+            Logger("Cannot register new sub config after finalization: "+name);
             return;
         }
         if (subConfigs.ContainsKey(name))
         {
-            Logger("Sub config already registered: " + name);
+            Logger("Sub config already registered: "+name);
             return;
         }
         // Create a new sub config with the same programmable block and program.
@@ -581,7 +578,7 @@ public class ConfigFile
             Logger("Configuration file already finalized.");
             return false;
         }
-
+/*
         // Finalize all sub configs first.
         foreach (var kvp in subConfigs)
         {
@@ -599,7 +596,7 @@ public class ConfigFile
                 return false;
             }
         }
-
+*/
         isFinalized = true;
         // Write default config to CustomData if needed.
         if(!CheckAndWriteDefaults())
@@ -625,21 +622,6 @@ public class ConfigFile
         {
             string valueStr = ValueToString(kvp.Value.DefaultValue, kvp.Value.ValueType);
             sb.AppendLine($"{kvp.Key}: {valueStr}");
-        }
-        // Output sub config blocks.
-        foreach (var kvp in subConfigs)
-        {
-            sb.AppendLine($"{kvp.Key}:");
-            string subText = kvp.Value.GenerateDefaultConfigText();
-            // Indent each line by two spaces (default output format for generated text).
-            using (StringReader sr = new StringReader(subText))
-            {
-                string line;
-                while ((line = sr.ReadLine()) != null)
-                {
-                    sb.AppendLine("  " + line);
-                }
-            }
         }
         return sb.ToString();
     }
@@ -683,7 +665,7 @@ public class ConfigFile
                     currentSubConfigName = trimmed.Substring(0, colonIndex).Trim();
                     if (!subConfigs.ContainsKey(currentSubConfigName))
                     {
-                        Logger("Unknown sub config: " + currentSubConfigName);
+                        Logger("Unknown sub config: "+currentSubConfigName);
                         return false;
                     }
                     if (!subConfigBlocks.ContainsKey(currentSubConfigName))
@@ -706,7 +688,7 @@ public class ConfigFile
                 // Indented line: should belong to an active sub config.
                 if (currentSubConfigName == null)
                 {
-                    Logger("Unexpected indentation without an active sub config header: " + line);
+                    Logger("Unexpected indentation without an active sub config header: "+line);
                     return false;
                 }
                 else
@@ -732,7 +714,7 @@ public class ConfigFile
                     }
                     else
                     {
-                        Logger("Line is indented but too short relative to the expected indent: " + line);
+                        Logger("Line is indented but too short relative to the expected indent: "+line);
                         return false;
                     }
                 }
@@ -813,16 +795,19 @@ public class ConfigFile
 
         if (!properties.ContainsKey(key))
         {
-            Logger("Unknown property requested: " + key);
+            Logger("Unknown property requested: "+key);
+            program.Echo("Unknown property requested: "+key); // JRH L
             return default(T);
         }
         try
         {
+            program.Echo("Trying to get value for: "+key); // JRH L
             return (T)properties[key].Value;
         }
         catch
         {
-            Logger("Type mismatch for property: " + key);
+            Logger("Type mismatch for property: "+key);
+            program.Echo("Type mismatch for property: "+key); // JRH L
             return default(T);
         }
     }
@@ -838,7 +823,7 @@ public class ConfigFile
 
         if (!subConfigs.ContainsKey(name))
         {
-            Logger("Unknown sub config requested: " + name);
+            Logger("Unknown sub config requested: "+name);
             return null;
         }
         return subConfigs[name];
@@ -853,7 +838,7 @@ public class ConfigFile
     {
         if (!subConfigs.ContainsKey(name))
         {
-            Logger("Unknown sub config requested: " + name);
+            Logger("Unknown sub config requested: "+name);
             return null;
         }
         return subConfigs[name];
