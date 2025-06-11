@@ -1,28 +1,31 @@
- 
-OVERVIEW: This script is designed to write the contents of broadcast messages
+# OVERVIEW:
+This script is designed to write the contents of broadcast messages
 to IMyTextPanels. The primary application being to facilitate the sharing of
 statuses between physically unconnected grids.
 
-IMPLEMENTATION: This script must be run an a Programmable Block that is located
+# IMPLEMENTATION:
+This script must be run an a Programmable Block that is located
 on the same grid as the IMyTextPanels that will display the contents of the 
-messages it receives. These IMyTextPanels must contain the Broadcast Tag
-associated with the broadcast channel corresponding to the data they are to
-display. In order for scripts on remote grids to send messages to
+messages it receives. Broadcast messages can originate from remote grids. All participating grids must have antennas! 
+
+
+# CONFIGURATION:
+Broadcast Tags must be specified in the CustomData of the
+PB that hosts this script as well as the IMyTextPanels that will
+display the broadcast data. E.g.,
+
+         Channels: [CHANNEL_A], [CHANNEL_B]
+
+This script allows IMyTextPanels to display feeds from multiple channels
+simultaneously. The Custom Names of the IMyTextPanels must contain the [MSG_DISPLAY] tag.
+This script must be recompiled following any changes made to CustomData.
+
+# USAGE:
+In order for scripts on remote grids to send messages to
 this program, they need only invoke the IGC.SendBroadcastMessage() method and
 provide it with the appropriate broadcast tag and message payload.
 
-CONFIGURATION: Broadcast Tags must be specified in the CustomData of the
-PB that hosts this script. E.g.,
-         Channels: [CHANNEL_A], [CHANNEL_B]
-
-This script must be recompiled following any changes made to CustomData.
-TODO: Add capability to write messages from multiple channels to a single
-display and implement it so that content of latest message is preserved
-on the display for all channels.
-
-Mark message displays with a single tag. Obtain their broadcast channel(s)
-from their CustomData!!!!!
-
+# Credit:
 This script uses the Wico Modular IGC Example code (see below) for its IGC 
 functions.
 
