@@ -1,5 +1,4 @@
 public IMyRemoteControl shipRefBlock;
-public IMyShipConnector gridRefBlock;
 public const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update10;
 public const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
 public const UpdateFrequency STOP_RATE = UpdateFrequency.None;
@@ -66,7 +65,6 @@ public Program() {
 
     // Initialize the program
     Runtime.UpdateFrequency = STOP_RATE;
-    gridRefBlock = null;
     shipRefBlock = FindShipRefBlock(this);
     if (shipRefBlock == null) {
         return;
