@@ -19,16 +19,27 @@ private const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update10;
 private const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
 private const UpdateFrequency STOP_RATE = UpdateFrequency.None;
 
-private Vector3D velocity; // Current ship velocity.
-private float descentSpeed = 0.0f; // Component of ship's velocity (meters/second) in direction of gravitational vector.
-private float stopDistance = 0.0f; // Distance in meters required to stop ship descent under full thrust.
-private float stopAltitude = 0.0f; // Altitude in meters at which ship descent should cease.
-private Vector3D gravityVec; // Current gravitational vector.
-private float thrust = 0.0f; // Current total thrust in Newtons.
-private float mass = 0.0f; // Current mass of ship in kg.
-private float alt = 0.0f; // Current altitude in meters.
-private float gravAccel = 0.0f; // Current gravitational acceleration in meters/second-squared.
-private float fuelRequired = 0.0f; // Fuel required in Liters to come to a hover under full thrust.
+private double tolerance = 5e-4; // Tolerance for checking small doubles.
+private double finalAlt = 20.0d; // Hover altitude at end of retro burn [meters].
+
+// Structure containing burn parameters.
+private struct RetroBurn{
+   public double burnDistance; // [meters].
+   public TimeSpan burnTime; // [hours:minutes:seconds].
+   public double fuelRequired; // [liters].
+   
+   public RetroBurn(double burnDistance, TimeSpan burnTime, double fuelRequired){
+      this.burnDistance = burnDistance;
+      this.burnTime = burnTime;
+      this.fuelRequired = fuelRequired;
+   }
+
+   public RetroBurn(double burnDistance, double burnTime, double fuelRequired){
+      this.burnDistance = burnDistance;
+      this.burnTime = TimeSpan.FromSeconds(burnTime);
+      this.fuelRequired = fuelRequired;
+   }
+}
 
 // Create an instance of ArgParser.
 private ArgParser argParser = new ArgParser();
@@ -47,8 +58,9 @@ public Program() {
     };
 
     // Register command line arguments
-    argParser.RegisterArg("run", typeof(bool), false, false); // Run the controller
-    argParser.RegisterArg("stop", typeof(bool), false, false); // Stop the controller
+    argParser.RegisterArg("run", typeof(bool), false, false); // Run the controller.
+    argParser.RegisterArg("stop", typeof(bool), false, false); // Stop the controller.
+    argParser.RegisterArg("final_alt", typeof(double), false, false); // Set desired hover altitude following retro burn [meters].
 
     // Register config parameters
     ConfigFile.RegisterProperty("Thrusters", ConfigValueType.String, "Thrusters (AtmoProbe)");
@@ -84,6 +96,9 @@ public void Main(string args) {
             case "--stop":
                 Runtime.UpdateFrequency = STOP_RATE;
                 break;
+            case "--final_alt":
+                finalAlt = (double)kvp.Value;
+                break;
             default:
                 logger.Warning("Unknown argument: " + kvp.Key);
                 break;
@@ -93,44 +108,173 @@ public void Main(string args) {
 
 /// <summary>
 /// Calculate total vertical thrust.
-/// <param name="currentThrust"> (float) return var that will hold the total thrust value in Newtons.</param>
-/// <returns> float - total thrust value in Newtons.</returns>
+/// <returns> double - total thrust value in [Newtons].</returns>
 /// </summary>
-private float CalculateTotalThrust(){
-   currentThrust = 0.0f;
+private double CalculateTotalThrust(){
+   float currentThrust = 0.0f;
    foreach(var thuster in thrusters){
       currentThrust += thuster.CurrentThrust;
    }
-   return currentThrust;
+   return (double)currentThrust;
 }
    
 /// <summary>
-/// Calculate current ship mass.
-/// <returns> float - total mass of the ship in kilograms.</returns>
+/// Calculate max total vertical thrust.
+/// <returns> double - max total thrust value in [Newtons].</returns>
 /// </summary>
-private float CalculateShipMass(){
-   return (MyShipMass)(shipController.CalculateShipMass()).TotalMass;
+private double CalculateMaxTotalThrust(){
+   float maxTotalThrust = 0.0f;
+   foreach(var thuster in thrusters){
+      maxTotalThrust += thuster.MaxThrust;
+   }
+   return (double)maxTotalThrust;
 }
 
 /// <summary>
 /// Calculate current ship mass.
-/// <returns> float - gravitational acceleration in meters per second-squared.</returns>
+/// <returns> double - total mass of the ship in kilograms.</returns>
 /// </summary>
-private float GetGravitationalAccel(){
-   return (float)shipController.GetNaturalGravity().Length();
+private double CalculateShipMass(){
+   return (double)(MyShipMass)(shipController.CalculateShipMass()).TotalMass;
+}
+
+/// <summary>
+/// Calculate local gravitational acceleration.
+/// <returns> double - gravitational acceleration in [meters/second^2].</returns>
+/// </summary>
+private double GetGravitationalAccel(){
+   return -shipController.GetNaturalGravity().Length();
 }
 
 /// <summary>
 /// Calculate current ship altitude in meters.
-/// <returns> double - current altitude in meters.</returns>
+/// <throws> InvalidOperationException if not within planetary gravitational field.</throws> /// <returns> double - current altitude in meters.</returns>
 /// </summary>
 private double GetAltitude(){
    double currentAlt;
    if(!shipController.TryGetPlanetElevation(MyPlanetElevation.Surface, out currentAlt)){
-      logger.Warning("Unable to calculate altitude!.");
+      logger.Warning(
+      throw InvalidOperationException("Unable to calculate altitude outside of planetary gravity field!.");
    }
 
    return currentAlt;
+}
+
+/// <summary>
+/// EQUATION (3)
+/// Calculate standard gravity for planet.
+/// You must be within the planet's gravity field for this calculation to be possible.
+/// <throws> InvalidOperationException if not within planetary gravitational field.</throws>
+/// <returns> float - gravitational acceleration at planet surface in meters per second-squared.</returns>
+/// </summary>
+private double CalculateStandardGravity(){
+   float gravAccelLocal = GetGravitationalAccel();
+   if(IsZero(gravAccelLocal, tolerance)){
+      throw InvalidOperationException("Unable to calculate planetary gravity outside of gravity field!.");
+   }
+
+   double currentAlt = GetAltitude();
+   double planetRadius = CalculatePlanetRadius();
+   return gravAccelLocal * (Math.Pow((planetRadius + currentAlt),2d)/Math.Pow(planetRadius, 2d));
+}
+
+/// <summary>
+/// EQUATION (2)
+/// Calculate planet radius.
+/// You must be within the planet's gravity field for this calculation to be possible.
+/// <throws> InvalidOperationException if not within planetary gravitational field.</throws>
+/// <returns> double - Radius of planet in meters.</returns>
+/// </summary>
+private double CalculatePlanetRadius(){
+   Vector3D planetPositionW = null;
+   if(!shipController.TryGetPlanetPosition(out planetPositionW)){
+      logger.Warning("Unable to calculate planet radius outside of planetary gravity field!.");
+      throw InvalidOperationException("Unable to calculate planet radius outside of planetary gravity field!.");
+   }
+   Vector3D shipPositionW = shipController.GetPosition();
+   double distanceToPlanetCenter = Vector3D.Subtract(planetPositionW, shipPositionW).Length();
+   return distanceToPlanetCenter - GetAltitude();
+}
+
+/// <summary>
+/// Test double precision value to see if it is approximately zero.
+/// <param name="val"> (double) double precision value to check.</param>
+/// <param name="tol"> (double) tolerance within which val is determined to be approximately zero.</param>
+/// <returns> bool - true if val is within tol of zero.</returns>
+/// </summary>
+private bool IsZero(double val, double tol){
+   return (Math.Abs(val) < tol);
+}
+
+/// <summary>
+/// CONDITION (11)
+/// Check to see if vertical thrust is sufficient to ascend against standard gravity.
+/// <returns> bool - true of vertical thurst acceleration is greater than standard gravitational acceleration.</returns>
+/// </summary>
+private bool HaveSufficientThrust(){
+   double shipMass = CalculateShipMass();
+   double thrustAccel = CalculateMaxTotalThrust()/shipMass;
+   return thrustAccel > Math.Abs(CalculateStandardGravity());
+}
+
+/// <summary>
+/// EQUATION (9)
+/// Calculate max retro burn distance under full thrust, standard gravity, and current ship mass.
+/// <returns> double - max burn distance to arrest descent at specified hover altitude [meters].</returns>
+/// </summary>
+private double CalculateMaxBurnDistance(){
+   double vZero = GetShipDescentSpeed();
+   double shipMass = CalculateShipMass();
+   double verticalThrust = CalculateMaxTotalThrust();
+   double thrustAccel = verticalThrust/shipMass;
+   double standardGravity = CalculateStandardGravity();
+   return -Math.Pow(vZero,2d)/(2*(thrustAccel + standardGravity));
+}
+
+/// <summary>
+/// EQUATION (8)
+/// Calculate retro burn distance under full thrust, local gravity, and current ship mass.
+/// <returns> double - burn distance to arrest descent at specified hover altitude [meters].</returns>
+/// </summary>
+private double CalculateBurnDistance(){
+   double vZero = GetShipDescentSpeed();
+   double shipMass = CalculateShipMass();
+   double verticalThrust = CalculateMaxTotalThrust();
+   double thrustAccel = verticalThrust/shipMass;
+   double gravAccelLocal = GetGravitationalAccel();
+   return -Math.Pow(vZero,2d)/(2*(thrustAccel + gravAccelLocal));
+}
+
+/// <summary>
+/// CONDITION (14)
+/// Make sure the retro burn can arrest descent at target hover altitude.
+/// <param name="burnDistance"> (double) distance travelled during retru burn [meters].</param>
+/// <param name="finalAltitude"> (double) target altitude at end of retro burn [meters].</param>
+/// <returns> bool - true ship will be able to stop descent at target altitude.</returns>
+/// </summary>
+private bool CanStopAtTargetAltitude(double burnDistance, double finalAltitude){
+   return burnDistance <= (GetAltitude() - finalAltitude);
+}
+   
+/// <summary>
+/// Calculate downward (descent) speed of ship.
+/// <returns> double - descent speed of ship [meters/second].</returns>
+/// </summary>
+private double GetShipDescentSpeed(){
+   Vector3D shipVelocityW = shipController.GetShipVelocities().LinearVelocity; // Ship velocity vector in World Frame??
+   Vector3D gravVecW = shipController.GetNaturalGravity();
+   return Vector3D.ProjectOnVector(shipVelocityW, gravVecW).Length();
+}
+
+/// <summary>
+/// CONDITION (20)(21)
+/// Check to see if it is time to start retro burn.
+/// <param name="burnDistance"> (double) distance travelled during retru burn [meters].</param>
+/// <param name="finalAltitude"> (double) target altitude at end of retro burn [meters].</param>
+/// <returns> bool - true if it is time to start retro burn.</returns>
+/// </summary>
+private bool InitiateRetroBurn(double burnDistance, double finalAltitude){
+   return GetAltitude() <= (burnDistance + finalAltitude);
 }
 
 /* v ---------------------------------------------------------------------- v */ 
