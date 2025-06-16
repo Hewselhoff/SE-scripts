@@ -1,8 +1,27 @@
 /*
  * OVERVIEW: This script calculates how long it will take to stop a ship's
- * descent under full thrust and engages thrusters to bring the ship to a
+ * descent under full thrust and initiates retro burn to bring the ship to a
  * hover at a specified altitude. It accounts for changes in ship mass and
- * natural gravitational acceleration.
+ * varations in natural gravitational acceleration w.r.t. altitude. This
+ * script does not control or account for any lateral forces or resulting
+ * motion. That is, all calculations are performed using the "vertical"
+ * projections/components of forces, accelerations, velocities, etc. The
+ * term, "vertical," is defined to be the acting direction of gravitational
+ * force. This script is also responsible for overriding the ships gyros to
+ * maintain level attitude during descent.
+ *
+ * REQUIREMENTS:
+ * 1. Shall calculate duration of retro burn at full thrust that is required 
+ *    to arrest ship's descent and bring it to a hover.
+ * 2. Shall monitor ship altitude and initiate retro burn at the altitude 
+ *    necessary to allow ship to decelerate to stable hover at a specified altitude.
+ * 3. Shall account for changes in ship mass (to include fuel and payload) and 
+ *    variations in gravitational acceleration in calculating retro burn parameters.
+ * 4. Shall track ship attitude, calculate, and apply overrides to gyroscopes to
+ *    affect level attitude. That is, optimize alignment of retro burn thrust with
+ *    gravitational force/acceleration. 
+ * 5. Shall calculate and report fuel required for retro burn and ensure adaquate 
+ *    fuel supply exist with a safety margin.
  *
  * NOTES: 
  * Assumptions
@@ -12,34 +31,23 @@
  *
  * Calculations
  * Speeds and accelerations will be projected onto the gravitational vector.
+ *
+ * METHOD CATALOG:
+ *
+ * CalculateTotalThrust() - Returns total vertical thrust in Newtons.
+ * CalculateShipMass() - Retruns total mass of ship including fuel and cargo.
+ * GetGravitationalAccel() - Returns gravitational acceleration at current altitude in meters/second^2.
+ * GetAltitude() - Returns current altitude of ship in meters.
+ * VectorProjection(a,b) - Returns Vector3D object that contains the projection of a onto b.
+ * GetThrustAccel() - Returns magnitude of vertical acceleration due to thrust in meters/second^2.
+ *
+ *
  */
 
 private IMyShipController shipController;
 private const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update10;
 private const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
 private const UpdateFrequency STOP_RATE = UpdateFrequency.None;
-
-private double tolerance = 5e-4; // Tolerance for checking small doubles.
-private double finalAlt = 20.0d; // Hover altitude at end of retro burn [meters].
-
-// Structure containing burn parameters.
-private struct RetroBurn{
-   public double burnDistance; // [meters].
-   public TimeSpan burnTime; // [hours:minutes:seconds].
-   public double fuelRequired; // [liters].
-   
-   public RetroBurn(double burnDistance, TimeSpan burnTime, double fuelRequired){
-      this.burnDistance = burnDistance;
-      this.burnTime = burnTime;
-      this.fuelRequired = fuelRequired;
-   }
-
-   public RetroBurn(double burnDistance, double burnTime, double fuelRequired){
-      this.burnDistance = burnDistance;
-      this.burnTime = TimeSpan.FromSeconds(burnTime);
-      this.fuelRequired = fuelRequired;
-   }
-}
 
 // Create an instance of ArgParser.
 private ArgParser argParser = new ArgParser();
@@ -48,13 +56,76 @@ private List<IMyThrust> thrusters = new List<IMyThrust>();
 
 private Logger logger; // Add [DDS_LOG] tag to LCD name to display logging.
 
+private double tolerance = 5e-4; // Tolerance for checking small doubles.
+private double finalAlt = 20.0d; // Hover altitude at end of retro burn [meters].
+private double standardGravity = -9.8; // Standard gravity (will be calculated) [merters/second^2].
+private double prevAlt = 0.0d; // Tracking altitude for previous tick in order to compute deltas.
+private double fuelBurnRate = 4821.0d; // Fuel burn rate per thruster [liters/second].
+private double totalFuelBurnRate = 4 * fuelBurnRate; // Total fuel consuption for all vertical thrusters [liters/second].
+private RetroBurn retroBurn;
+
+// Vertical movement status of ship.
+private enum STATUS{
+   ASCENDING,
+   DESCENDING,
+   HOVERING
+}
+
+// Structure containing burn parameters.
+private struct RetroBurn{
+
+   public double burnDistance; // Vertical distance covered during retro burn [meters].
+   public TimeSpan burnTime; // Duration of retro burn [hours:minutes:seconds].
+   public double fuelRequired; // Fuel consumed during retro burn [liters].
+   public double startingAlt = 40000.0d; // Altitude at which retro burn must be initiated [meters]
+   public double gravAccel = -9.8d; // Associated gravitational acceleration [meters/second^2].
+   public bool isActive = false; // Flag to indicate if burn is active.
+
+
+   public RetroBurn(){
+      this.burnDistance = 0.0d;
+      this.burnTime = new TimeSpan0(0,0,0);
+      this.fuelRequired = 0.0d;
+      this.gravAccel = -9.8d;
+   }
+
+   public RetroBurn(double burnDistance, TimeSpan burnTime, double fuelRequired, double startingAlt, double gravAccel){
+      this.burnDistance = burnDistance;
+      this.burnTime = burnTime;
+      this.fuelRequired = fuelRequired;
+      this.startingAlt = startingAlt;
+      this.gravAccel = gravAccel;
+   }
+
+   public RetroBurn(double burnDistance, double burnTime, double fuelRequired, double startingAlt, double gravAccel){
+      this.burnDistance = burnDistance;
+      this.burnTime = TimeSpan.FromSeconds(burnTime);
+      this.fuelRequired = fuelRequired;
+      this.startingAlt = startingAlt;
+      this.gravAccel = gravAccel;
+   }
+
+   public string ToString(){
+      StringBuilder str = new StringBuilder();
+      str.AppendLine("Retro Burn Parameters:");
+      str.AppendLine(" Burn Distance: " + this.burnDistance.ToString() + " [m]");
+      str.AppendLine(" Burn Duration: " + this.burnTime.ToString());
+      str.AppendLine(" Fuel Required: " + this.fuelRequired.ToString() + " [L]");
+      str.AppendLine(" Initial Altitude: " + this.startingAlt.ToString() + " [m]");
+      str.AppendLine(" Final Altitude: " + finalAlt.ToString() + " [m]");
+      str.AppendLine(" Gravitational Acceleration: " + this.gravAccel.ToString() + " [m/s^2]");
+      return str.ToString();
+   }
+
+}
+
 public Program() {
 
     // Initialize the logger, enabling all output types.
     logger = new Logger(this){
         UseEchoFallback = false,    // Fallback to program.Echo if no LCDs are available.
         LogToCustomData = false     // Enable logging to CustomData.
-        
+
     };
 
     // Register command line arguments
@@ -65,9 +136,12 @@ public Program() {
     // Register config parameters
     ConfigFile.RegisterProperty("Thrusters", ConfigValueType.String, "Thrusters (AtmoProbe)");
     ConfigFile.RegisterProperty("ShipController", ConfigValueType.String, "RemoteControl (AtmoProbe)");
+    ConfigFile.RegisterProperty("FuelRate", ConfigValueType.Double, 4821.0d);
 
     ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("Thrusters"))).GetBlocksOfType<IMyMotorSuspension>(thrusters);
     shipController = (IMyRemoteControl)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("ShipController"));
+    fuelBurnRate = ConfigFile.Get<double>("FuelRate");
+    totalFuelBurnRate = fuelBurnRate * thrusters.Count;
 
     Runtime.UpdateFrequency = STOP_RATE;
 }
@@ -92,9 +166,11 @@ public void Main(string args) {
         {
             case "--run":
                 Runtime.UpdateFrequency = SAMPLE_RATE;
+                Initialize();
                 break;
             case "--stop":
                 Runtime.UpdateFrequency = STOP_RATE;
+                TerminateRetroBurn(retroBurn);
                 break;
             case "--final_alt":
                 finalAlt = (double)kvp.Value;
@@ -104,6 +180,115 @@ public void Main(string args) {
                 break;
         }
     }
+
+    // If the retro burn controller has been triggered...
+    if(Runtime.UpdateFrequency == SAMPLE_RATE){
+       // If retro burn is not in progress...
+       if(!retroBurn.isActive){
+          // Start retro burn if it is time to do so.
+          if(ShouldInitiateRetroBurn(retroBurn.burnDistance, finalAlt)){
+             InitiateRetroBurn(retroBurn);
+          }
+       // If retro burn is already in progress...
+       }else if(retroBurn.isActive){
+          switch(GetVerticalMovementStatus()){
+             // If we are descending, then just keep going.
+             case STATUS.DESCENDING:
+                break;
+             // If we are ascending, then we need to terminate retro.
+             case STATUS.ASCENDING:
+             // If we are hovering, then we need to terminate retro.
+             case STATUS.HOVERING:
+                TerminateRetroBurn(retroBurn);
+                break;
+             default:
+                break;
+          }
+
+       }
+       prevAlt = GetAltitude();
+    }
+
+}
+
+// Initialize Retro Burn Calculator.
+private void Initialize(){
+   standardGravity = CalculateStandardGravity();
+   PerformInitialChecks();
+   retroBurn = CalculateMaxRetroBurn();
+}
+
+// Perform initial checks to ensure retro burn is feasible.
+private void PerformInitialChecks(){
+   if(!HaveSufficientThrust()){
+      logger.Warning("Max vertical thrust is not sufficient to overcome standard gravity!");
+      //TODO: Override vertical thrust to escape gravity well?
+   }
+   if(!CanStopAtTargetAltitude(CalculateMaxBurnDistance(), finalAlt)){
+      logger.Warning("Max vertical thurst is not sufficient to achieve final hover altitude!");
+      double minFinalAlt = GetAltitude() - CalculateMaxBurnDistance();
+      logger.Warning("Minimum possible final hover altitude is "  + minFinalAlt.ToString() + " [m]!");
+   }
+}
+
+// Override vertical thrusters to facilitate retro burn.
+private void InitiateRetroBurn(ref RetroBurn burn){
+   foreach(var thuster in thrusters){
+      thruster.ThrustOverridePercentage(1.0f);
+   }
+   burn.isActive = true;
+}
+
+// Disable vertical thruster overrides so that inertial dampening
+// can take over and maintain a hover.
+private void TerminateRetroBurn(ref RetroBurn burn){
+   foreach(var thuster in thrusters){
+      thruster.ThrustOverridePercentage(0.0f);
+   }
+   burn.isActive = false;
+}
+
+private RetroBurn CalculateMaxRetroBurn(){
+   RetroBurn burn = new RetroBurn();
+
+   burnDistance = CalculateMaxBurnDistance();
+   gravAccel = CalculateStandardGravity();
+   burnTime = CalculateBurnTime(gravAccel, burnDistance);
+   fuelRequired = totalFuelBurnRate * burnTime.TotalSeconds();
+   startingAlt = GetAltitude();
+
+   return burn;
+}
+
+private RetroBurn CalculateRetroBurn(){
+   RetroBurn burn = new RetroBurn();
+
+   burnDistance = CalculateBurnDistance();
+   gravAccel = GetGravitationalAccel();
+   burnTime = CalculateBurnTime(gravAccel, burnDistance);
+   fuelRequired = totalFuelBurnRate * burnTime.TotalSeconds();
+   startingAlt = GetAltitude();
+
+   return burn;
+}
+
+/// <summary>
+/// Obtain the status of vertical movement.
+/// <returns> STATUS - vertical movement status.</returns>
+/// </summary>
+private TimeSpan CalculateBurnTime(double gravAccel, double burnDist){
+   return TimeSpan.FromSeconds(Math.Sqrt(2*burnDist/gravAccel));
+}
+
+/// <summary>
+/// Obtain the status of vertical movement.
+/// <returns> STATUS - vertical movement status.</returns>
+/// </summary>
+private STATUS GetVerticalMovementStatus(){
+   double delta = GetAltitude() - prevAlt;
+   if(delta < 0.0d){ return STATUS.DESCENDING; }
+   else if(delta > 0.0d){ return STATUS.ASCENDING; }
+   return STATUS.HOVERING;
 }
 
 /// <summary>
@@ -117,7 +302,7 @@ private double CalculateTotalThrust(){
    }
    return (double)currentThrust;
 }
-   
+
 /// <summary>
 /// Calculate max total vertical thrust.
 /// <returns> double - max total thrust value in [Newtons].</returns>
@@ -255,7 +440,7 @@ private double CalculateBurnDistance(){
 private bool CanStopAtTargetAltitude(double burnDistance, double finalAltitude){
    return burnDistance <= (GetAltitude() - finalAltitude);
 }
-   
+
 /// <summary>
 /// Calculate downward (descent) speed of ship.
 /// <returns> double - descent speed of ship [meters/second].</returns>
@@ -269,16 +454,16 @@ private double GetShipDescentSpeed(){
 /// <summary>
 /// CONDITION (20)(21)
 /// Check to see if it is time to start retro burn.
-/// <param name="burnDistance"> (double) distance travelled during retru burn [meters].</param>
+/// <param name="burn"> (RetroBurn) latest retro burn parameters.</param>
 /// <param name="finalAltitude"> (double) target altitude at end of retro burn [meters].</param>
 /// <returns> bool - true if it is time to start retro burn.</returns>
 /// </summary>
-private bool InitiateRetroBurn(double burnDistance, double finalAltitude){
-   return GetAltitude() <= (burnDistance + finalAltitude);
+private bool ShouldInitiateRetroBurn(RetroBurn burn, double finalAltitude){
+   return GetAltitude() <= (burn.burnDistance + finalAltitude);
 }
 
-/* v ---------------------------------------------------------------------- v */ 
-/* v Caml Config File API                                                   v */ 
+/* v ---------------------------------------------------------------------- v */
+/* v Caml Config File API                                                   v */
 /* v ---------------------------------------------------------------------- v */
 // The supported property types.
 public enum ConfigValueType
@@ -512,7 +697,7 @@ public static class ConfigFile
                             List<string> items = new List<string>();
                             bool inQuotes = false;
                             StringBuilder currentItem = new StringBuilder();
-                            
+
                             for (int i = 0; i < inner.Length; i++)
                             {
                                 char c = inner[i];
@@ -531,13 +716,13 @@ public static class ConfigFile
                                     currentItem.Append(c);
                                 }
                             }
-                            
+
                             // Add the last item.
                             if (currentItem.Length > 0)
                             {
                                 items.Add(currentItem.ToString().Trim());
                             }
-                            
+
                             parsedValue = items;
                             parseSuccess = true;
                         }
@@ -632,12 +817,12 @@ public static class ConfigFile
         return true;
     }
 }
-/* ^ ---------------------------------------------------------------------- ^ */ 
-/* ^ Caml Config File API                                                   ^ */ 
+/* ^ ---------------------------------------------------------------------- ^ */
+/* ^ Caml Config File API                                                   ^ */
 /* ^ ---------------------------------------------------------------------- ^ */
 
-/* v ---------------------------------------------------------------------- v */ 
-/* v ArgParser API                                                          v */ 
+/* v ---------------------------------------------------------------------- v */
+/* v ArgParser API                                                          v */
 /* v ---------------------------------------------------------------------- v */
 // A general purpose argument parser for Space Engineers programmable blocks.
 public class ArgParser
@@ -899,8 +1084,8 @@ public class ArgParser
         return null;
     }
 }
-/* ^ ---------------------------------------------------------------------- ^ */ 
-/* ^ ArgParser API                                                          ^ */ 
+/* ^ ---------------------------------------------------------------------- ^ */
+/* ^ ArgParser API                                                          ^ */
 /* ^ ---------------------------------------------------------------------- ^ */
 
 /* v ---------------------------------------------------------------------- v */
