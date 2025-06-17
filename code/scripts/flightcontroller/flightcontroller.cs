@@ -61,7 +61,7 @@ private double finalAlt = 20.0d; // Hover altitude at end of retro burn [meters]
 private double standardGravity = -9.8; // Standard gravity (will be calculated) [merters/second^2].
 private double prevAlt = 0.0d; // Tracking altitude for previous tick in order to compute deltas.
 private double fuelBurnRate = 4821.0d; // Fuel burn rate per thruster [liters/second].
-private double totalFuelBurnRate = 4 * fuelBurnRate; // Total fuel consuption for all vertical thrusters [liters/second].
+private double totalFuelBurnRate = 4 * 4821.0d; // Total fuel consuption for all vertical thrusters [liters/second].
 private RetroBurn retroBurn;
 
 // Vertical movement status of ship.
@@ -77,17 +77,9 @@ private struct RetroBurn{
    public double burnDistance; // Vertical distance covered during retro burn [meters].
    public TimeSpan burnTime; // Duration of retro burn [hours:minutes:seconds].
    public double fuelRequired; // Fuel consumed during retro burn [liters].
-   public double startingAlt = 40000.0d; // Altitude at which retro burn must be initiated [meters]
-   public double gravAccel = -9.8d; // Associated gravitational acceleration [meters/second^2].
-   public bool isActive = false; // Flag to indicate if burn is active.
-
-
-   public RetroBurn(){
-      this.burnDistance = 0.0d;
-      this.burnTime = new TimeSpan0(0,0,0);
-      this.fuelRequired = 0.0d;
-      this.gravAccel = -9.8d;
-   }
+   public double startingAlt;// = 40000.0d; // Altitude at which retro burn must be initiated [meters]
+   public double gravAccel;// = -9.8d; // Associated gravitational acceleration [meters/second^2].
+   public bool isActive;// = false; // Flag to indicate if burn is active.
 
    public RetroBurn(double burnDistance, TimeSpan burnTime, double fuelRequired, double startingAlt, double gravAccel){
       this.burnDistance = burnDistance;
@@ -95,6 +87,7 @@ private struct RetroBurn{
       this.fuelRequired = fuelRequired;
       this.startingAlt = startingAlt;
       this.gravAccel = gravAccel;
+      this.isActive = false;
    }
 
    public RetroBurn(double burnDistance, double burnTime, double fuelRequired, double startingAlt, double gravAccel){
@@ -103,16 +96,17 @@ private struct RetroBurn{
       this.fuelRequired = fuelRequired;
       this.startingAlt = startingAlt;
       this.gravAccel = gravAccel;
+      this.isActive = false;
    }
 
-   public string ToString(){
+   public override string ToString(){
       StringBuilder str = new StringBuilder();
       str.AppendLine("Retro Burn Parameters:");
       str.AppendLine(" Burn Distance: " + this.burnDistance.ToString() + " [m]");
       str.AppendLine(" Burn Duration: " + this.burnTime.ToString());
       str.AppendLine(" Fuel Required: " + this.fuelRequired.ToString() + " [L]");
       str.AppendLine(" Initial Altitude: " + this.startingAlt.ToString() + " [m]");
-      str.AppendLine(" Final Altitude: " + finalAlt.ToString() + " [m]");
+      //str.AppendLine(" Final Altitude: " + finalAlt.ToString() + " [m]");
       str.AppendLine(" Gravitational Acceleration: " + this.gravAccel.ToString() + " [m/s^2]");
       return str.ToString();
    }
@@ -136,9 +130,13 @@ public Program() {
     // Register config parameters
     ConfigFile.RegisterProperty("Thrusters", ConfigValueType.String, "Thrusters (AtmoProbe)");
     ConfigFile.RegisterProperty("ShipController", ConfigValueType.String, "RemoteControl (AtmoProbe)");
-    ConfigFile.RegisterProperty("FuelRate", ConfigValueType.Double, 4821.0d);
+    ConfigFile.RegisterProperty("FuelRate", ConfigValueType.Float, 4821.0d);
 
-    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("Thrusters"))).GetBlocksOfType<IMyMotorSuspension>(thrusters);
+    if(string.IsNullOrWhiteSpace(Me.CustomData)){
+       Me.CustomData = ConfigFile.GenerateDefaultConfigText();
+    }
+
+    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("Thrusters"))).GetBlocksOfType<IMyThrust>(thrusters);
     shipController = (IMyRemoteControl)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("ShipController"));
     fuelBurnRate = ConfigFile.Get<double>("FuelRate");
     totalFuelBurnRate = fuelBurnRate * thrusters.Count;
@@ -170,7 +168,7 @@ public void Main(string args) {
                 break;
             case "--stop":
                 Runtime.UpdateFrequency = STOP_RATE;
-                TerminateRetroBurn(retroBurn);
+                TerminateRetroBurn(ref retroBurn);
                 break;
             case "--final_alt":
                 finalAlt = (double)kvp.Value;
@@ -186,8 +184,8 @@ public void Main(string args) {
        // If retro burn is not in progress...
        if(!retroBurn.isActive){
           // Start retro burn if it is time to do so.
-          if(ShouldInitiateRetroBurn(retroBurn.burnDistance, finalAlt)){
-             InitiateRetroBurn(retroBurn);
+          if(ShouldInitiateRetroBurn(retroBurn, finalAlt)){
+             InitiateRetroBurn(ref retroBurn);
           }
        // If retro burn is already in progress...
        }else if(retroBurn.isActive){
@@ -199,7 +197,7 @@ public void Main(string args) {
              case STATUS.ASCENDING:
              // If we are hovering, then we need to terminate retro.
              case STATUS.HOVERING:
-                TerminateRetroBurn(retroBurn);
+                TerminateRetroBurn(ref retroBurn);
                 break;
              default:
                 break;
@@ -213,9 +211,15 @@ public void Main(string args) {
 
 // Initialize Retro Burn Calculator.
 private void Initialize(){
+   logger.Info(" Retro Burn Calculator Triggered.");
    standardGravity = CalculateStandardGravity();
    PerformInitialChecks();
+   logger.Info(" BRINGING VERTICAL THRUSTERS ONLINE.");
+   foreach(var thruster in thrusters){
+      thruster.Enabled = true;
+   }
    retroBurn = CalculateMaxRetroBurn();
+   logger.Info(retroBurn.ToString());
 }
 
 // Perform initial checks to ensure retro burn is feasible.
@@ -233,29 +237,32 @@ private void PerformInitialChecks(){
 
 // Override vertical thrusters to facilitate retro burn.
 private void InitiateRetroBurn(ref RetroBurn burn){
-   foreach(var thuster in thrusters){
-      thruster.ThrustOverridePercentage(1.0f);
+   foreach(var thruster in thrusters){
+      thruster.ThrustOverridePercentage = 1.0f;
    }
+   logger.Info("Retro burn initiated.");
    burn.isActive = true;
 }
 
 // Disable vertical thruster overrides so that inertial dampening
 // can take over and maintain a hover.
 private void TerminateRetroBurn(ref RetroBurn burn){
-   foreach(var thuster in thrusters){
-      thruster.ThrustOverridePercentage(0.0f);
+   foreach(var thruster in thrusters){
+      thruster.ThrustOverridePercentage = 0.0f;
    }
+   logger.Info("Retro burn terminated.");
    burn.isActive = false;
 }
 
 private RetroBurn CalculateMaxRetroBurn(){
    RetroBurn burn = new RetroBurn();
 
-   burnDistance = CalculateMaxBurnDistance();
-   gravAccel = CalculateStandardGravity();
-   burnTime = CalculateBurnTime(gravAccel, burnDistance);
-   fuelRequired = totalFuelBurnRate * burnTime.TotalSeconds();
-   startingAlt = GetAltitude();
+   burn.burnDistance = CalculateMaxBurnDistance();
+   burn.gravAccel = CalculateStandardGravity();
+   burn.burnTime = CalculateBurnTime(burn.gravAccel, burn.burnDistance);
+   burn.fuelRequired = totalFuelBurnRate * burn.burnTime.TotalSeconds;
+   burn.startingAlt = GetAltitude();
+   burn.isActive = false;
 
    return burn;
 }
@@ -263,11 +270,12 @@ private RetroBurn CalculateMaxRetroBurn(){
 private RetroBurn CalculateRetroBurn(){
    RetroBurn burn = new RetroBurn();
 
-   burnDistance = CalculateBurnDistance();
-   gravAccel = GetGravitationalAccel();
-   burnTime = CalculateBurnTime(gravAccel, burnDistance);
-   fuelRequired = totalFuelBurnRate * burnTime.TotalSeconds();
-   startingAlt = GetAltitude();
+   burn.burnDistance = CalculateBurnDistance();
+   burn.gravAccel = GetGravitationalAccel();
+   burn.burnTime = CalculateBurnTime(burn.gravAccel, burn.burnDistance);
+   burn.fuelRequired = totalFuelBurnRate * burn.burnTime.TotalSeconds;
+   burn.startingAlt = GetAltitude();
+   burn.isActive = false;
 
    return burn;
 }
@@ -320,7 +328,7 @@ private double CalculateMaxTotalThrust(){
 /// <returns> double - total mass of the ship in kilograms.</returns>
 /// </summary>
 private double CalculateShipMass(){
-   return (double)(MyShipMass)(shipController.CalculateShipMass()).TotalMass;
+   return (double)((MyShipMass)(shipController.CalculateShipMass())).TotalMass;
 }
 
 /// <summary>
@@ -338,8 +346,7 @@ private double GetGravitationalAccel(){
 private double GetAltitude(){
    double currentAlt;
    if(!shipController.TryGetPlanetElevation(MyPlanetElevation.Surface, out currentAlt)){
-      logger.Warning(
-      throw InvalidOperationException("Unable to calculate altitude outside of planetary gravity field!.");
+      throw new InvalidOperationException("Unable to calculate altitude outside of planetary gravity field!.");
    }
 
    return currentAlt;
@@ -353,13 +360,16 @@ private double GetAltitude(){
 /// <returns> float - gravitational acceleration at planet surface in meters per second-squared.</returns>
 /// </summary>
 private double CalculateStandardGravity(){
-   float gravAccelLocal = GetGravitationalAccel();
+   double gravAccelLocal = GetGravitationalAccel();
+   logger.Info("Local Gravitational Acceleration: " + gravAccelLocal + " m/s^2");
    if(IsZero(gravAccelLocal, tolerance)){
-      throw InvalidOperationException("Unable to calculate planetary gravity outside of gravity field!.");
+      throw new InvalidOperationException("Unable to calculate planetary gravity outside of gravity field!.");
    }
 
    double currentAlt = GetAltitude();
+   logger.Info("Current Altitude: " + currentAlt + " m");
    double planetRadius = CalculatePlanetRadius();
+   logger.Info("Planet Radius: " + planetRadius + " m");
    return gravAccelLocal * (Math.Pow((planetRadius + currentAlt),2d)/Math.Pow(planetRadius, 2d));
 }
 
@@ -371,10 +381,10 @@ private double CalculateStandardGravity(){
 /// <returns> double - Radius of planet in meters.</returns>
 /// </summary>
 private double CalculatePlanetRadius(){
-   Vector3D planetPositionW = null;
+   Vector3D planetPositionW;
    if(!shipController.TryGetPlanetPosition(out planetPositionW)){
       logger.Warning("Unable to calculate planet radius outside of planetary gravity field!.");
-      throw InvalidOperationException("Unable to calculate planet radius outside of planetary gravity field!.");
+      throw new InvalidOperationException("Unable to calculate planet radius outside of planetary gravity field!.");
    }
    Vector3D shipPositionW = shipController.GetPosition();
    double distanceToPlanetCenter = Vector3D.Subtract(planetPositionW, shipPositionW).Length();
@@ -408,11 +418,17 @@ private bool HaveSufficientThrust(){
 /// <returns> double - max burn distance to arrest descent at specified hover altitude [meters].</returns>
 /// </summary>
 private double CalculateMaxBurnDistance(){
+   //logger.Info("CALCULATING MAX BURN DISTANCE");
    double vZero = GetShipDescentSpeed();
+   //logger.Info("Initial Descent Speed: " + vZero + " m/s");
    double shipMass = CalculateShipMass();
+   //logger.Info("Ship Mass: " + shipMass + " kg");
    double verticalThrust = CalculateMaxTotalThrust();
+   //logger.Info("Max Vertical Thrust: " + verticalThrust + " N");
    double thrustAccel = verticalThrust/shipMass;
+   //logger.Info("Vertical Thrust Acceleration: " + thrustAccel + " m/s^2");
    double standardGravity = CalculateStandardGravity();
+   //logger.Info("Standard Gravity: " + standardGravity + " m/s^2");
    return -Math.Pow(vZero,2d)/(2*(thrustAccel + standardGravity));
 }
 
@@ -448,7 +464,7 @@ private bool CanStopAtTargetAltitude(double burnDistance, double finalAltitude){
 private double GetShipDescentSpeed(){
    Vector3D shipVelocityW = shipController.GetShipVelocities().LinearVelocity; // Ship velocity vector in World Frame??
    Vector3D gravVecW = shipController.GetNaturalGravity();
-   return Vector3D.ProjectOnVector(shipVelocityW, gravVecW).Length();
+   return Vector3D.ProjectOnVector(ref shipVelocityW, ref gravVecW).Length();
 }
 
 /// <summary>
@@ -1142,7 +1158,7 @@ public class Logger
         // Find all IMyTextPanel blocks with "[LOG]" in the name.
         lcdPanels = new List<IMyTextPanel>();
         List<IMyTextPanel> allPanels = new List<IMyTextPanel>();
-        program.GridTerminalSystem.GetBlocksOfType<IMyTextPanel>(allPanels, panel => panel.CustomName.Contains("[DDS_LOG]"));
+        program.GridTerminalSystem.GetBlocksOfType<IMyTextPanel>(allPanels, panel => panel.CustomName.Contains("[LOG]"));
 
         // Filter out panels not on the same grid as the programmable block.
         foreach (var panel in allPanels)
