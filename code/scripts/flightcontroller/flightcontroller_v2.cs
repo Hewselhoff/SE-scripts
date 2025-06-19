@@ -206,35 +206,22 @@ public void Main(string args) {
        }else{
           // If ship has reached retro burn starting altitude,
           // then disable inertial dampening and initiate burn.
-          if(currentAltitudeAGL <= retroBurnAltThreshold){
+          if(currentAltitudeAGL <= retroBurnAltThreshold && retroBurnIsActive == false){
              shipController.DampenersOverride = false;
              retroBurnIsActive = true;
+             InitiateRetroBurn();
           }
        }
+       
+       timeElapsedInCycle = 0.0d;
+    }
 
-       // If retro burn requirements are met, then commence.
-       if(retroBurnIsActive){
-
-      
-
-
-
-    // Get natural gravity vector
-    Vector3D naturalGravity = shipController.GetNaturalGravity();
 
     // Calculate required thrust
-    Vector3D requiredThrust = CalculateRequiredThrust(naturalGravity);
+    //Vector3D requiredThrust = CalculateRequiredThrust(naturalGravity);
 
     // Apply thrust overrides
-    SetThrustOverrides(requiredThrust);
-
-    // Landing logic 
-    if (currentAltitudeAGL <= finalAltitude && IsZero(GetShipDescentSpeed(), tolerance)){
-       // Set thrust overrides on downward thrusters
-       foreach (var thruster in retroThrusters){
-           thruster.ThrustOverridePercentage = 0.0f;
-       }
-    }
+    //SetThrustOverrides(requiredThrust);
 
     // Update Logging output.
     sbLog.Clear();
@@ -264,6 +251,14 @@ public void Main(string args) {
     sb.AppendLine("  Up:          " + (-thrustAccelBFrame).Y.ToString("F3", new System.Globalization.CultureInfo("en-US"))+ " [m/s^2]");
     sb.AppendLine("  Right:      " + (-thrustAccelBFrame.X).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
     display.WriteText(sb.ToString(),false);
+}
+
+// Override retro thrusters to max.
+private void InitiateRetroBurn(){
+   foreach(var thruster in retroThrusters){
+      thruster.Enabled = true;
+      thurster.ThrustOverridePercentage = 1f;
+   }
 }
 
 // Remove thruster overrides and activate inertial dampening to maintain hover
