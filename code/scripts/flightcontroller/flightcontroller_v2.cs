@@ -12,7 +12,7 @@
  */
 
 private IMyShipController shipController;
-private const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update10;
+private const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
 private const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
 private const UpdateFrequency STOP_RATE = UpdateFrequency.None;
 
@@ -30,8 +30,21 @@ private IMyTextPanel display;
 
 private double tolerance = 5e-4; // Tolerance for checking small doubles.
 
+private const double MAX_GRAVITY = -11.76d; // Max planetary gravitational acceleration (Pertam)[m/s^2]. 
+private double MAX_THRUST = 0.0d; // Maximum vertical thrust for ship [N].
+private double MAX_BURN_DISTANCE = 0.0d; // Retro burn distanc under worst conditions [m].
+private const double MAX_THRUST_PERCENTAGE = 0.80d; // Safety factor to prevent max thrust.
+private const double MAX_SPEED = 104.4d; // Max achievable speed in game [m/s].
+private const double SAFETY_MARGIN_CONST = 0.5d; // Used to calculate margin for discrete time error mitigation.
+private const double SHUTDOWN_TIMEOUT = 3.0d; // If ship is stationary for this many seconds, then terminate retro.
+
+// SE runs at 60 ticks per second.
+private const double SECONDS_PER_TICK = 1.0d/60.0d;
+private const double UPDATES_PER_SECOND = 10.0d;
+private const double MAX_TIME_CYCLE = 1.0d/UPDATES_PER_SECOND; // Seconds between updates.
+
 private double desiredDescentSpeed = 5.0; // Target descent speed [m/s].
-private double landingAltitude = 100.0; // Altitude to initiate landing procedures.
+private double finalAltitude = 100.0; // Altitude to initiate landing procedures.
 private double desiredDeceleration = 5.0; // Desired deceleration during descent [m/s^2].
 private double shipMass = 0; // Total ship mass [kg].
 private Vector3D currentVelocity; // Current velocity vector in World Frame [m/s].
@@ -40,6 +53,10 @@ private double currentAltitudeASL; // Current altitude above sea level [m].
 private double currentAltitudeAGL; // Current altitude above ground level [m].
 private double totalFuelBurnRate; // Total fuel consumption rate for all retro thrusters [L/s].
 private double fuelBurnRate; // Fuel consumption for a single large H2 Thruster [L/s].
+private double timeElapsedInCycle = 100;
+private double hoverDuration = 0.0d; // Time in seconds spent in hover. Used to determine when to terminate retro calculations.
+private double retroBurnAltThreshold = 0.0d; // Altitude at which retro burn should commence [m].
+private bool retroBurnIsActive = false; // Flag to indicate when retro burn is in progress.
 
 private Logger logger; // Add [DDS_LOG] tag to LCD name to display logging.
 private StringBuilder sbLog = new StringBuilder(); // StringBuilder object to hold logging output.
@@ -69,6 +86,7 @@ public Program() {
     ConfigFile.RegisterProperty("DescentSpeed", ConfigValueType.Float, 5.0d);
     ConfigFile.RegisterProperty("FuelRate", ConfigValueType.Float, 4821.0d);
     ConfigFile.RegisterProperty("Display", ConfigValueType.String, "HoloLCDRight (AtmoProbe)");
+    ConfigFile.RegisterProperty("FinalAltitude", ConfigValueType.Float, 100.0d); // Final hover altitude [m].
 
     if(string.IsNullOrWhiteSpace(Me.CustomData)){
        Me.CustomData = ConfigFile.GenerateDefaultConfigText();
@@ -95,8 +113,18 @@ public Program() {
     desiredDeceleration = ConfigFile.Get<double>("DescentAcceleration");
     desiredDescentSpeed = ConfigFile.Get<double>("DescentSpeed");
     fuelBurnRate = ConfigFile.Get<double>("FuelRate");
+    finalAltitude = ConfigFile.Get<double>("FinalAltitude");
 
     totalFuelBurnRate = fuelBurnRate * retroThrusters.Count;
+
+    // Calculate max effective thrust produced by retro thrusters.
+    foreach(var thruster in retroThrusters){
+       MAX_THRUST += thruster.MaxThrust();
+    }
+
+    // Calculate worst case burn distance. Assume max initial velocity of 100m/s.
+    double maxThrustAccel = MAX_THRUST/(double)((MyShipMass)(shipController.CalculateShipMass())).TotalMass;
+    MAX_BURN_DISTANCE = Math.Pow(100.0d, 2d)/(2*(maxThrustAccel + MAX_GRAVITY));
 
     // We only want to run continously after event controller detects presence of
     // natural gravity.
@@ -128,7 +156,7 @@ public void Main(string args) {
                 Runtime.UpdateFrequency = STOP_RATE;
                 break;
             case "--final_alt":
-                landingAltitude = (double)kvp.Value;
+                finalAltitude = (double)kvp.Value;
                 break;
             case "--decel":
                 desiredDeceleration = (double)kvp.Value;
@@ -148,11 +176,48 @@ public void Main(string args) {
     // Update ship's state
     shipMass = shipController.CalculateShipMass().TotalMass;
     currentVelocity = shipController.GetShipVelocities().LinearVelocity;
+    Vector3D velBFrame = GetShipVelocityBodyFrame();
+    Vector3D gravAccelBFrame = GetNaturalGravityBodyFrame();
+    Vector3D thrustAccelBFrame = GetThrustAccelBodyFrame();
     currentPosition = shipController.GetPosition();
     shipController.TryGetPlanetElevation(MyPlanetElevation.Surface, out currentAltitudeAGL);
     shipController.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out currentAltitudeASL);
+    retroBurnAltThreshold = CalculateRetroBurnThreshold();
 
     logger.Clear(); 
+
+    // Incrementing 1/60th of a second every tick.
+    timeElapsedInCycle += SECONDS_PER_TICK;
+
+    // See if ship is hovering near final altitude and track how long it has
+    // been there.
+    if(currentAltitudeAGL <= 1.1*finalAltitude && currentVelocity.Length() < MIN_SPEED){
+       hoverDuration += timeElapsedInCycle;
+    }else{
+       hoverDuration = 0.0d;
+    }
+
+    // Check to see if it is time for updated calculations.
+    if(timeElapsedInCycle >= MAX_TIME_CYCLE){
+
+       // Check for end of retro.
+       if(hoverDuration > SHUTDOWN_TIMEOUT && currentAltitudeAGL <= finalAltitude){
+          TerminateRetroBurn();
+       }else{
+          // If ship has reached retro burn starting altitude,
+          // then disable inertial dampening and initiate burn.
+          if(currentAltitudeAGL <= retroBurnAltThreshold){
+             shipController.DampenersOverride = false;
+             retroBurnIsActive = true;
+          }
+       }
+
+       // If retro burn requirements are met, then commence.
+       if(retroBurnIsActive){
+
+      
+
+
 
     // Get natural gravity vector
     Vector3D naturalGravity = shipController.GetNaturalGravity();
@@ -164,12 +229,11 @@ public void Main(string args) {
     SetThrustOverrides(requiredThrust);
 
     // Landing logic 
-    if (currentAltitudeAGL <= landingAltitude && IsZero(GetShipDescentSpeed(), tolerance)){
+    if (currentAltitudeAGL <= finalAltitude && IsZero(GetShipDescentSpeed(), tolerance)){
        // Set thrust overrides on downward thrusters
        foreach (var thruster in retroThrusters){
            thruster.ThrustOverridePercentage = 0.0f;
        }
-       shipController.DampenersOverride = true;
     }
 
     // Update Logging output.
@@ -185,24 +249,45 @@ public void Main(string args) {
     // Update display output.
     sb.Clear();
 
-    Vector3D velBFrame = GetShipVelocityBodyFrame();
     sb.AppendLine("Velocity:");
     sb.AppendLine("  Forward: " + (-velBFrame.Z).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s]");
     sb.AppendLine("  Up:          " + velBFrame.Y.ToString("F3", new System.Globalization.CultureInfo("en-US"))+ " [m/s]");
     sb.AppendLine("  Right:      " + velBFrame.X.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s]");
 
-    Vector3D gravAccelBFrame = GetNaturalGravityBodyFrame();
     sb.AppendLine("\nGravity:");
     sb.AppendLine("  Forward: " + (-gravAccelBFrame.Z).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
     sb.AppendLine("  Up:          " + gravAccelBFrame.Y.ToString("F3", new System.Globalization.CultureInfo("en-US"))+ " [m/s^2]");
     sb.AppendLine("  Right:      " + gravAccelBFrame.X.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
 
-    Vector3D thrustAccelBFrame = GetThrustAccelBodyFrame();
     sb.AppendLine("\nThrust Acceleration:");
     sb.AppendLine("  Forward: " + thrustAccelBFrame.Z.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
     sb.AppendLine("  Up:          " + (-thrustAccelBFrame).Y.ToString("F3", new System.Globalization.CultureInfo("en-US"))+ " [m/s^2]");
     sb.AppendLine("  Right:      " + (-thrustAccelBFrame.X).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
     display.WriteText(sb.ToString(),false);
+}
+
+// Remove thruster overrides and activate inertial dampening to maintain hover
+// once retro burn is complete.
+private void TerminateRetroBurn(){
+   foreach(var thruster in retroThrusters){
+      thruster.ThrustOverridePercentage = 0.0f;
+   }
+   shipController.DampenersOverride = true;
+   retroBurnIsActive = false;
+}
+
+// Calculate altitude at which retro burn must commence.
+private double CalculateRetroBurnThreshold(){
+   double deceleration = (MAX_THRUST/shipMass + GetGravitationalAccel()) * MAX_THRUST_PERCENTAGE;
+   // Need margin to account for discrete time errors.
+   double safetyMargin = MAX_SPEED * MAX_TIME_CYCLE * SAFETY_MARGIN_CONST;
+   return currentVelocity.LengthSquared()/(2*deceleration) + safetyMargin + finalAltitude;
+}
+
+// Returns magnitude of local gravitational acceleration [m/s^2].
+// NOTE: Returned value is negative.
+private double GetGravitationalAccel(){
+   return -shipController.GetNaturalGravity().Length();
 }
 
 /// <summary>
