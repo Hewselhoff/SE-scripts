@@ -1,153 +1,58 @@
-/*
- * OVERVIEW: This script calculates how long it will take to stop a ship's
- * descent under full thrust and initiates retro burn to bring the ship to a
- * hover at a specified altitude. It accounts for changes in ship mass and
- * varations in natural gravitational acceleration w.r.t. altitude. This
- * script does not control or account for any lateral forces or resulting
- * motion. That is, all calculations are performed using the "vertical"
- * projections/components of forces, accelerations, velocities, etc. The
- * term, "vertical," is defined to be the acting direction of gravitational
- * force. This script is also responsible for overriding the ships gyros to
- * maintain level attitude during descent.
- */
-
-
-// Create an instance of ArgParser.
-private ArgParser argParser = new ArgParser();
-
 private IMyShipController shipController;
-private List<IMyThrust> retroThrusters = new List<IMyThrust>(); // H2 Retro Thrusters.
-private List<IMyThrust> leftThrusters = new List<IMyThrust>(); // All Left Thrusters.
-private List<IMyThrust> rightThrusters = new List<IMyThrust>(); // All Right Thrusters.
-private List<IMyThrust> upThrusters = new List<IMyThrust>(); // All Up Thrusters.
-private List<IMyThrust> downThrusters = new List<IMyThrust>(); // All Down Thrusters.
-private List<IMyThrust> forwardThrusters = new List<IMyThrust>(); // All Forward Thrusters.
-private List<IMyThrust> backThrusters = new List<IMyThrust>(); // All Back Thrusters.
-private List<IMyGasTank> h2Tanks = new List<IMyGasTank>(); // Hydrogen Tanks.
-private IMyTextPanel display;
+private List<IMyGyro> gyros = new List<IMyGyro>(); // H2 Retro Thrusters.
+private Vector3D gravVecW; // Gravity vector in World Frame [m/s^2].
+private double anglePitch = 0;
+private double angleRoll = 0;
+private Vector3D alignmentVec = new Vector3D(0,0,0);
 
 // Constants
 private const UpdateFrequency SAMPLE_RATE = UpdateFrequency.Update1;
 private const UpdateFrequency CHECK_RATE = UpdateFrequency.Update100;
 private const UpdateFrequency STOP_RATE = UpdateFrequency.None;
-
 private const double tolerance = 1.0e-5; // Zero approximation check tolerance.
-private const double MAX_GRAVITY = -11.76d; // Max planetary gravitational acceleration (Pertam)[m/s^2]. 
-private double MAX_THRUST = 0.0d; // Maximum vertical thrust for ship [N].
-private double MAX_BURN_DISTANCE = 0.0d; // Retro burn distanc under worst conditions [m].
-private const double MAX_THRUST_PERCENTAGE = 0.80d; // Safety factor to prevent max thrust.
-private const double MAX_SPEED = 104.4d; // Max achievable speed in game [m/s].
-private const double MIN_SPEED = 1.0d; // Low enough speed to consider ship in hover [m/s].
-private const double SAFETY_MARGIN_CONST = 0.5d; // Used to calculate margin for discrete time error mitigation.
-private const double SHUTDOWN_TIMEOUT = 3.0d; // If ship is stationary for this many seconds, then terminate retro.
 
-private double totalFuelCapacity = 0.0d; // Total capacity of hydrogen tanks [L].
-private const double SECONDS_PER_TICK = 1.0d/60.0d; // SE runs at 60 ticks per second.
-private const double UPDATES_PER_SECOND = 10.0d;
-private const double MAX_TIME_CYCLE = 1.0d/UPDATES_PER_SECOND; // Seconds between updates.
-
-// Variables
-private double desiredDescentSpeed = 5.0; // Target descent speed [m/s]. NOT USED... YET.
-private double descentSpeed = 0.0d; // Magnitude of velocity along direction of gravity vector [m/s].
-private double finalAltitude = 200.0; // Altitude to initiate landing procedures [m].
-private double desiredDeceleration = 5.0; // Desired deceleration during descent [m/s^2].
-private double shipMass = 0; // Total ship mass [kg].
-private Vector3D currentVelocityW; // Current velocity vector in World Frame [m/s].
-private Vector3D gravVecW; // Gravity vector in World Frame [m/s^2].
-private double currentAltitudeMSL; // Current altitude above sea level [m].
-private double currentAltitudeAGL; // Current altitude above ground level [m].
-private double totalFuelBurnRate; // Total fuel consumption rate for all retro thrusters [L/s]. NOT USED... YET.
-private double fuelBurnRate; // Fuel consumption for a single large H2 Thruster [L/s]. NOT USED... YET.
-private double availableFuel; // Current fuel level [L].
-private double timeElapsedInCycle = 0.0d; // Tracking time to ensure recalculation every 10th of a second.
-private double retroBurnAltThreshold = 0.0d; // Altitude at which retro burn should commence [m].
-private double retroBurnDuration = 0.0d; // Duration of retro burn [s].
-private bool retroBurnIsActive = false; // Flag to indicate when retro burn is in progress.
-private bool thrustOverriden = false; // Flag to indicate when retro thrusters are powered.
-
-private bool running = false; // Flat to indicate that script is running.
-
-private Logger logger; // Add [LOG] tag to LCD name to display logging.
+private Logger logger; // Add [AC_LOG] tag to LCD name to display logging.
 private StringBuilder sbLog = new StringBuilder(); // StringBuilder object to hold logging output.
-private StringBuilder sb = new StringBuilder(); // StringBuilder object to hold display output.
+
+// Create an instance of ArgParser.
+private ArgParser argParser = new ArgParser();
 
 public Program() {
 
-    // Initialize the logger, enabling all output types.
-    logger = new Logger(this){
-        UseEchoFallback = false,    // Fallback to program.Echo if no LCDs are available.
-        LogToCustomData = false     // Enable logging to CustomData.
+   // Initialize the logger, enabling all output types.
+   logger = new Logger(this){
+       UseEchoFallback = false,    // Fallback to program.Echo if no LCDs are available.
+       LogToCustomData = false     // Enable logging to CustomData.
 
-    };
+   };
 
-    // Register command line arguments
-    argParser.RegisterArg("run", typeof(bool), false, false); // Run the controller.
-    argParser.RegisterArg("stop", typeof(bool), false, false); // Stop the controller.
-    argParser.RegisterArg("final_alt", typeof(double), false, false); // Set desired hover altitude following retro burn [m].
-    argParser.RegisterArg("decel", typeof(double), false, false); // Set desired descent deceleration [m/s^2].
-    argParser.RegisterArg("speed", typeof(double), false, false); // Set desired descent speed [m/s].
-    argParser.RegisterArg("dampening", typeof(bool), false, false); // Enable inertial dampening.
+   // Register command line arguments
+   argParser.RegisterArg("run", typeof(bool), false, false); // Run the controller.
+   argParser.RegisterArg("stop", typeof(bool), false, false); // Stop the controller.
 
-    // Register config parameters
-    ConfigFile.RegisterProperty("Thrusters", ConfigValueType.String, "H2ThrustersUp (AtmoProbe)");
-    ConfigFile.RegisterProperty("ShipController", ConfigValueType.String, "RemoteControl (AtmoProbe)");
-    ConfigFile.RegisterProperty("DescentAcceleration", ConfigValueType.Float, 5.0d);
-    ConfigFile.RegisterProperty("DescentSpeed", ConfigValueType.Float, 5.0d);
-    ConfigFile.RegisterProperty("FuelRate", ConfigValueType.Float, 4821.0d);
-    ConfigFile.RegisterProperty("Display", ConfigValueType.String, "HoloLCDRight (AtmoProbe)");
-    ConfigFile.RegisterProperty("FinalAltitude", ConfigValueType.Float, finalAltitude); // Final hover altitude [m].
-    ConfigFile.RegisterProperty("H2Tanks", ConfigValueType.String, "H2Tanks  (AtmoProbe)");
+   // Register config parameters
+   ConfigFile.RegisterProperty("Gyros", ConfigValueType.String, "Gyroscopes (AtmoProbe)");
+   ConfigFile.RegisterProperty("ShipController", ConfigValueType.String, "RemoteControl (AtmoProbe)");
 
-    // Write Config to Custom Data if is empty.
-    if(string.IsNullOrWhiteSpace(Me.CustomData)){
-       Me.CustomData = ConfigFile.GenerateDefaultConfigText();
-    }
+   // Write Config to Custom Data if is empty.
+   if(string.IsNullOrWhiteSpace(Me.CustomData)){
+      Me.CustomData = ConfigFile.GenerateDefaultConfigText();
+   }
 
-    // Load config parameters.
-    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("Thrusters"))).GetBlocksOfType<IMyThrust>(retroThrusters);
-    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("H2Tanks"))).GetBlocksOfType<IMyGasTank>(h2Tanks);
-    //GridTerminalSystem.GetBlocksOfType(retroThrusters, block => block.WorldMatrix.Forward == shipController.WorldMatrix.Down);
-    shipController = (IMyRemoteControl)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("ShipController"));
+   // Load config parameters.
+   ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("Gyros"))).GetBlocksOfType<IMyGyro>(gyros);
+   shipController = (IMyRemoteControl)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("ShipController"));
 
-    try{
-       GridTerminalSystem.GetBlocksOfType<IMyThrust>(leftThrusters, block => block.WorldMatrix.Forward == shipController.WorldMatrix.Left);
-       GridTerminalSystem.GetBlocksOfType<IMyThrust>(rightThrusters,block => block.WorldMatrix.Forward == shipController.WorldMatrix.Right);
-       GridTerminalSystem.GetBlocksOfType<IMyThrust>(downThrusters, block => block.WorldMatrix.Forward == shipController.WorldMatrix.Down);
-       GridTerminalSystem.GetBlocksOfType<IMyThrust>(upThrusters, block => block.WorldMatrix.Forward == shipController.WorldMatrix.Up);
-       GridTerminalSystem.GetBlocksOfType<IMyThrust>(forwardThrusters, block => block.WorldMatrix.Forward == shipController.WorldMatrix.Forward);
-       GridTerminalSystem.GetBlocksOfType<IMyThrust>(backThrusters, block => block.WorldMatrix.Forward == shipController.WorldMatrix.Backward);
-    }catch(Exception e){
-       Echo(e.ToString());
-       logger.Error(e.ToString());
-    }
-
-    display = (IMyTextPanel)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("Display"));
-    desiredDeceleration = ConfigFile.Get<double>("DescentAcceleration");
-    desiredDescentSpeed = ConfigFile.Get<double>("DescentSpeed");
-    fuelBurnRate = ConfigFile.Get<double>("FuelRate");
-    finalAltitude = ConfigFile.Get<double>("FinalAltitude");
-
-    totalFuelBurnRate = fuelBurnRate * retroThrusters.Count;
-
-    foreach(var tank in h2Tanks){
-       totalFuelCapacity += tank.Capacity;
-    }
-
-    // Calculate max effective thrust produced by retro thrusters.
-    foreach(var thruster in retroThrusters){
-       MAX_THRUST += thruster.MaxThrust;
-    }
-
-    // Calculate worst case burn distance. Assume max initial velocity of 100m/s.
-    double maxThrustAccel = MAX_THRUST/(double)((MyShipMass)(shipController.CalculateShipMass())).TotalMass;
-    MAX_BURN_DISTANCE = Math.Pow(100.0d, 2d)/(2*(maxThrustAccel + MAX_GRAVITY));
-
-    // We only want to run continously after event controller detects presence of
-    // natural gravity.
-    Runtime.UpdateFrequency = STOP_RATE;
+   // We only want to run continously after event controller detects presence of
+   // natural gravity.
+   Runtime.UpdateFrequency = STOP_RATE;
 }
+bool running = false;
 
 public void Main(string args) {
+
+    logger.Clear(); 
+    sbLog.Clear();
 
     // Parse the input argument string.
     if (!argParser.Parse(args))
@@ -166,316 +71,124 @@ public void Main(string args) {
         switch (kvp.Key)
         {
             case "--run":
-                Runtime.UpdateFrequency = SAMPLE_RATE;
+                Runtime.UpdateFrequency = CHECK_RATE;
                 running = true;
                 break;
             case "--stop":
-                TerminateRetroBurn();
+                ClearGyroOverrides();
                 Runtime.UpdateFrequency = STOP_RATE;
                 running = false;
-                break;
-            case "--final_alt":
-                finalAltitude = (double)kvp.Value;
-                break;
-            case "--decel":
-                desiredDeceleration = (double)kvp.Value;
-                break;
-            case "--speed":
-                desiredDescentSpeed = (double)kvp.Value;
-                break;
-            case "--dampening":
-                shipController.DampenersOverride = (bool)kvp.Value;
-                break;
+                logger.Info("Running: " + running);
+                return;
             default:
                 logger.Warning("Unknown argument: " + kvp.Key);
                 break;
         }
     }
 
-    logger.Clear(); 
+    // Some logging for sanity checks.
+    sbLog.AppendLine("Running: " + running);
+
+    sbLog.AppendLine("Show Horiz Indicator: " + shipController.ShowHorizonIndicator);
+    sbLog.AppendLine("Roll Indicator: " + shipController.RollIndicator);
+    sbLog.AppendLine("Gyro Override Status:");
+
+    foreach(var gyro in gyros){
+       sbLog.AppendLine("  " + gyro.CustomName + ": " + gyro.GyroOverride);
+    }
+
+    sbLog.AppendLine("\nGyro Overrides:");
+
+    foreach(var gyro in gyros){
+       sbLog.AppendLine("  " + gyro.CustomName + ": ");
+       sbLog.AppendLine("    Roll: " + gyro.Roll);
+       sbLog.AppendLine("    Pitch: " + gyro.Pitch);
+       sbLog.AppendLine("    Yaw: " + gyro.Yaw);
+    }
+
+    logger.Info("\n" + sbLog.ToString());
 
     // Make sure we are within planetary gravitational field!
-    // This will help avoid division-by-zero.
     gravVecW = shipController.GetNaturalGravity();
-    if(Math.Abs(GetGravitationalAccel()) < tolerance){
-       logger.Warning("CANNOT PERFORM RETRO BURN CALCULATIONS OUTSIDE OF GRAVITY WELL.");
+    if(Math.Abs(gravVecW.Length()) < tolerance){
+       logger.Clear(); 
+       logger.Warning("CANNOT PERFORM STABILIZATION CALCULATIONS OUTSIDE OF GRAVITY WELL.");
        logger.Warning("ACTING PLANETARY GRAVITY: " + gravVecW.Length() + " [m/s^2].");
+       // Just in case. Don't want to exit the gravity well and find out that
+       // we can't manually control attitude.
+       ClearGyroOverrides();
        return;
     }
 
-    // Update ship's state 
-    // TODO: MAKE SURE THESE CALLS ARE IN THE CORRECT ORDER.
-    shipMass = shipController.CalculateShipMass().TotalMass;
-    currentVelocityW = shipController.GetShipVelocities().LinearVelocity;
-    Vector3D velBFrame = GetShipVelocityBodyFrame(); // REQUIRES: currentVelocityW [X].
-    Vector3D gravAccelBFrame = GetNaturalGravityBodyFrame(); // REQUIRES: gravVecW [X].
-    Vector3D thrustAccelBFrame = GetThrustAccelBodyFrame(); // REQUIRES: shipMass [X].
-    shipController.TryGetPlanetElevation(MyPlanetElevation.Surface, out currentAltitudeAGL);
-    shipController.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out currentAltitudeMSL);
-    descentSpeed = GetShipDescentSpeed(); // REQUIRES: currentVelocityW, gravVecW [X].
-    retroBurnAltThreshold = CalculateRetroBurnThreshold(); // REQUIRES: shipMass, gravVecW, descentSpeed [X].
-    retroBurnDuration = CalculateRetroBurnDuration();// REQUIRES: gravVecW, descentSpeed [X].
-    availableFuel = GetTotalAvailableFuel();
+    // We want to align body-frame down with gravity.
+    alignmentVec = gravVecW;
 
+    // World Matrix for the ship.
+    MatrixD refMatrix = shipController.WorldMatrix;
 
-    // Incrementing 1/60th of a second every tick.
-    timeElapsedInCycle += SECONDS_PER_TICK;
+    //---Get Roll and Pitch Angles using trigonometric dot product definition.
+    anglePitch = Math.Acos(MathHelper.Clamp(alignmentVec.Dot(refMatrix.Forward) / alignmentVec.Length(), -1, 1)) - Math.PI / 2;
 
-    // Descent can be broken down into 3 altitude regimes:
-    //  1. Above retro burn threshold (RBT). (Pre-Retro)
-    //  2. Below retro burn threshold (RBT) and above final altitude. (Retro)
-    //  3. At or below final altitude. (Post-Retro)
-    //
-    // There are 10 possible states distributed across the 3 regimes:
-    //
-    //  1. (Pre-Retro):
-    //    A. ABOVE RBT:
-    //      i. FALLING. (currentAltitude > retroBurnAltThreshold && descentSpeed > 0)
-    //      ii. NOT FALLING. (currentAltitude > retroBurnAltThreshold && descentSpeed ~= 0)
-    //    B. AT RBT:
-    //      i. FALLING. (currentAltitude == retroBurnAltThreshold && descentSpeed > 0)
-    //      ii. NOT FALLING. (currentAltitude == retroBurnAltThreshold && descentSpeed ~= 0)
-    //  2. (Retro):
-    //    A. ABOVE final altitude:
-    //      i. FALLING. (currentAltitude > finalAltitude && descentSpeed > 0)
-    //      ii. NOT FALLING. (currentAltitude > finalAltitude && descentSpeed ~= 0)
-    //    B. AT final altitude:
-    //      i. FALLING. (currentAltitude == finalAltitude && descentSpeed > 0)
-    //      ii. NOT FALLING. (currentAltitude == finalAltitude && descentSpeed ~= 0)
-    //  3. (Post-Retro):
-    //    A. BELOW final altitude:
-    //      i. FALLING. (currentAltitude < finalAltitude && descentSpeed > 0)
-    //      ii. NOT FALLING. (currentAltitude < finalAltitude && descentSpeed ~= 0)
-    //
-    // All states within these regimes must be considered.
-    //
-    // 1.A.i.: Keep falling.
-    // 1.A.ii.: Eliminate retro thrust.
-    // 1.B.i.: Initiate retro burn.
-    // 1.B.ii.: Eliminate retro thrust.
-    // 2.A.i.: Continue retro burn.
-    // 2.A.ii.: Eliminate retro thrust.
-    // 2.B.i.: Continue retro burn.
-    // 2.B.ii.: Terminate retro burn.
-    // 3.A.i.: Continue retro burn.
-    // 3.A.ii.: Terminate retro burn.
+    Vector3D planetRelativeLeftVec = refMatrix.Forward.Cross(alignmentVec);
 
-    // Check to see if it is time for updated calculations.
-    if(timeElapsedInCycle >= MAX_TIME_CYCLE){
-       // Regime 1.
-       if(currentAltitudeAGL > retroBurnAltThreshold){
-          if(descentSpeed > MIN_SPEED){
-             // Keep falling
-          }else{
-             TurnOffVerticalThrust();
-          }
-       // Regime 2.
-       }else if(currentAltitudeAGL <= retroBurnAltThreshold && currentAltitudeAGL > finalAltitude){
-          if(descentSpeed > MIN_SPEED){
-             InitiateRetroBurn();
-          }else{
-             TurnOffVerticalThrust();
-          }
-       // Regime 3.
-       }else if(currentAltitudeAGL <= finalAltitude){
-          if(descentSpeed > MIN_SPEED){
-             if(!thrustOverriden){
-                InitiateRetroBurn();
-             }
-          }else{
-             TerminateRetroBurn();
-          }
-       }
+    angleRoll = Math.Acos(MathHelper.Clamp(refMatrix.Left.Dot(planetRelativeLeftVec) / planetRelativeLeftVec.Length(), -1, 1));
+    angleRoll *= Math.Sign(VectorProjection(refMatrix.Left, alignmentVec).Dot(alignmentVec)); //ccw is positive 
 
-       timeElapsedInCycle = 0.0d;
+    anglePitch *= -1; 
+    angleRoll *= -1;
+
+    double roll_deg = Math.Round(angleRoll / Math.PI * 180);
+    double pitch_deg = Math.Round(anglePitch / Math.PI * 180);
+
+    //---Angle controller    
+    double rollSpeed = Math.Round(angleRoll, 2);
+    double pitchSpeed = Math.Round(anglePitch, 2);
+
+    //---Enforce rotation speed limit
+    if(Math.Abs(rollSpeed) + Math.Abs(pitchSpeed) > 2 * Math.PI){
+        double scale = 2 * Math.PI / (Math.Abs(rollSpeed) + Math.Abs(pitchSpeed));
+        rollSpeed *= scale;
+        pitchSpeed *= scale;
     }
 
-    // Update Logging output.
-    sbLog.Clear();
-
-    sbLog.AppendLine("\nRUNNING:                   " + running + ".");
-    sbLog.AppendLine("Altitude (MSL):            " + currentAltitudeMSL.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m].");
-    sbLog.AppendLine("Altitude (AGL):            " + currentAltitudeAGL.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m].");
-    sbLog.AppendLine("Altitude Delta:            " + (currentAltitudeMSL - currentAltitudeAGL).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m].");
-    sbLog.AppendLine("Hover Altitude:            " + finalAltitude.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m].");
-    sbLog.AppendLine("Local Gravity:             " + (-gravAccelBFrame.Length()).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2].");
-    sbLog.AppendLine("Ship Mass:                 " + shipMass.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [kg].");
-    sbLog.AppendLine("Descent Speed:             " + descentSpeed.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s].");
-    sbLog.AppendLine("Retro Threshold Altitude:  " + retroBurnAltThreshold.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m]."); // This should be increasing during descent.
-    sbLog.AppendLine("Retro Burn Distance:       " + (retroBurnAltThreshold - finalAltitude).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m]."); // This should be increasing during descent.
-    sbLog.AppendLine("Retro Burn Duration:       " + retroBurnDuration.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [s]."); // This should be increasing during descent.
-    sbLog.AppendLine("Fuel Demand:               " + CalculateFuelConsumption().ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [L].");
-    sbLog.AppendLine("Fuel Demand %:             " + CalculateFuelConsumptionPercentage().ToString("F3", new System.Globalization.CultureInfo("en-US")) + " %.");
-    if(CalculateFuelConsumptionPercentage() > 90){
-       sbLog.AppendLine("\nCRITICAL WARNING: Anticipated fuel consumption for retro burn exceeds 90%!");
-    }else{
-       sbLog.AppendLine("\n");
-    }
-    sbLog.AppendLine("\nRetro Burn Active:         " + retroBurnIsActive + ".");
-    sbLog.AppendLine("\nRetro Thruster Override %: ");
-    foreach(var thruster in retroThrusters){
-       sbLog.AppendLine("  " + thruster.CustomName + ": " + thruster.ThrustOverridePercentage*100 + "%");
-    }
-
-    logger.Info(sbLog.ToString());
-
-    // Update display output.
-    sb.Clear();
-
-    sb.AppendLine("Velocity:");
-    sb.AppendLine("  Forward: " + (-velBFrame.Z).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s]");
-    sb.AppendLine("  Up:          " + velBFrame.Y.ToString("F3", new System.Globalization.CultureInfo("en-US"))+ " [m/s]");
-    sb.AppendLine("  Right:      " + velBFrame.X.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s]");
-
-    sb.AppendLine("\nGravity:");
-    sb.AppendLine("  Forward: " + (-gravAccelBFrame.Z).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
-    sb.AppendLine("  Up:          " + gravAccelBFrame.Y.ToString("F3", new System.Globalization.CultureInfo("en-US"))+ " [m/s^2]");
-    sb.AppendLine("  Right:      " + gravAccelBFrame.X.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
-
-    sb.AppendLine("\nThrust Acceleration:");
-    sb.AppendLine("  Forward: " + thrustAccelBFrame.Z.ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
-    sb.AppendLine("  Up:          " + (-thrustAccelBFrame).Y.ToString("F3", new System.Globalization.CultureInfo("en-US"))+ " [m/s^2]");
-    sb.AppendLine("  Right:      " + (-thrustAccelBFrame.X).ToString("F3", new System.Globalization.CultureInfo("en-US")) + " [m/s^2]");
-    display.WriteText(sb.ToString(),false);
+    ApplyGyroOverride(pitchSpeed, 0, -rollSpeed, gyros, shipController);
 }
 
-// Override retro thrusters to max.
-private void InitiateRetroBurn(){
-   shipController.DampenersOverride = false;
-   retroBurnIsActive = true;
-   thrustOverriden = true;
-   foreach(var thruster in retroThrusters){
-      thruster.Enabled = true;
-      thruster.ThrustOverridePercentage = 1f;
+
+// Turn off gyro overrides.
+private void ClearGyroOverrides(){
+   foreach (IMyGyro gyro in gyros){
+      gyro.Pitch = 0.0f;
+      gyro.Yaw = 0.0f;
+      gyro.Roll = 0.0f;
+      gyro.GyroOverride = false;
    }
 }
 
-// Remove thruster overrides and activate inertial dampening to maintain hover
-// once retro burn is complete.
-private void TerminateRetroBurn(){
-   foreach(var thruster in retroThrusters){
-      thruster.ThrustOverridePercentage = 0.0f;
+//Whip's ApplyGyroOverride Method v9 - 8/19/17
+private void ApplyGyroOverride(double pitch_speed, double yaw_speed, double roll_speed, List<IMyGyro> gyro_list, IMyTerminalBlock reference){
+   var rotationVec = new Vector3D(-pitch_speed, yaw_speed, roll_speed); //because keen does some weird stuff with signs
+
+   var shipMatrix = reference.WorldMatrix;
+   var relativeRotationVec = Vector3D.TransformNormal(rotationVec, shipMatrix);
+
+   foreach (var thisGyro in gyro_list)
+   {
+       var gyroMatrix = thisGyro.WorldMatrix;
+       var transformedRotationVec = Vector3D.TransformNormal(relativeRotationVec, Matrix.Transpose(gyroMatrix));
+
+       thisGyro.Pitch = (float)transformedRotationVec.X;
+       thisGyro.Yaw = (float)transformedRotationVec.Y;
+       thisGyro.Roll = (float)transformedRotationVec.Z;
+       thisGyro.GyroOverride = true;
    }
-   shipController.DampenersOverride = true;
-   retroBurnIsActive = false;
-   thrustOverriden = false;
 }
 
-// Cut thrust to resume free fall.
-private void TurnOffVerticalThrust(){
-   foreach(var thruster in retroThrusters){
-      thruster.ThrustOverridePercentage = 0.0f;
-   }
-   thrustOverriden = false;
-}
-
-// Get total available fuel [L].
-private double GetTotalAvailableFuel(){
-   double fuel = 0.0d;
-   foreach(var tank in h2Tanks){
-      fuel += tank.Capacity * tank.FilledRatio;
-   }
-   return fuel;
-}
-
-// Calculate duration of retro burn using SUVAT(4) [s].
-private double CalculateRetroBurnDuration(){
-   double deceleration = (MAX_THRUST/shipMass + GetGravitationalAccel()) * MAX_THRUST_PERCENTAGE;
-   return Math.Abs(descentSpeed/deceleration);
-}
-
-// Calculate anticipated fuel consumption during retro burn.
-private double CalculateFuelConsumption(){
-   return totalFuelBurnRate*retroBurnDuration;
-}
-
-// Calculate anticipated fuel consumption during retro burn as percentage
-// of all fuel onboard.
-private double CalculateFuelConsumptionPercentage(){
-   return (totalFuelBurnRate*retroBurnDuration)/availableFuel * 100;
-}
-
-// Calculate altitude at which retro burn must commence given
-// current speed, max availabe thrust, local gravitational acceleration, and
-// current ship mass.
-private double CalculateRetroBurnThreshold(){
-   double deceleration = (MAX_THRUST/shipMass + GetGravitationalAccel()) * MAX_THRUST_PERCENTAGE;
-   // Need margin to account for discrete time errors.
-   double safetyMargin = MAX_SPEED * MAX_TIME_CYCLE * SAFETY_MARGIN_CONST;
-   // This expression is derived from SUVAT(1).
-   return Math.Pow(descentSpeed, 2.0d)/(2*deceleration) + safetyMargin + finalAltitude;
-}
-
-// Returns magnitude of local gravitational acceleration [m/s^2].
-// NOTE: Returned value is negative.
-private double GetGravitationalAccel(){
-   return -gravVecW.Length();
-}
-
-/// <summary>
-/// Calculate downward (descent) speed of ship in gravity.
-/// This method is only valid when natural gravity is acting.
-/// <returns> double - descent speed of ship [meters/second].</returns>
-/// </summary>
-private double GetShipDescentSpeed(){
-   double verticalSpeed = Vector3D.ProjectOnVector(ref currentVelocityW, ref gravVecW).Length();
-   // Account for direction of velocity.
-   double angle = Vector3D.Angle(currentVelocityW, gravVecW);
-   if(angle < Math.PI/2){
-      return verticalSpeed;
-   }
-   // If there is no downward velocity component then descent speed is,
-   // of course, zero.
-   return 0.0d;
-}
-
-private Vector3D GetNaturalGravityBodyFrame(){
-   return Vector3D.TransformNormal(gravVecW, MatrixD.Transpose(shipController.WorldMatrix));
-}
-
-// Just for grins and sanity checks in logging.
-private Vector3D GetThrustAccelBodyFrame(){
-
-   double rightThrust = 0.0d;
-   foreach(var thruster in rightThrusters){
-      rightThrust += thruster.CurrentThrust;
-   }
-
-   double leftThrust = 0.0d;
-   foreach(var thruster in leftThrusters){
-      leftThrust += thruster.CurrentThrust;
-   }
-
-   double upThrust = 0.0d;
-   foreach(var thruster in upThrusters){
-      upThrust += thruster.CurrentThrust;
-   }
-
-   double downThrust = 0.0d;
-   foreach(var thruster in downThrusters){
-      downThrust += thruster.CurrentThrust;
-   }
-
-   double forwardThrust = 0.0d;
-   foreach(var thruster in forwardThrusters){
-      forwardThrust += thruster.CurrentThrust;
-   }
-
-   double backThrust = 0.0d;
-   foreach(var thruster in backThrusters){
-      backThrust += thruster.CurrentThrust;
-   }
-
-   double xThrustAccel = (rightThrust - leftThrust)/shipMass;
-   double yThrustAccel = (upThrust - downThrust)/shipMass;
-   double zThrustAccel = (backThrust - forwardThrust)/shipMass;
-
-   return new Vector3D(xThrustAccel, yThrustAccel, zThrustAccel);
-}
-
-// Just for grins and sanity checks in logging.
-private Vector3D GetShipVelocityBodyFrame(){
-   return Vector3D.TransformNormal(currentVelocityW, MatrixD.Transpose(shipController.WorldMatrix));
+// Whip's projection method.
+private Vector3D VectorProjection(Vector3D a, Vector3D b) //proj a on b
+{
+    Vector3D projection = a.Dot(b) / b.LengthSquared() * b;
+    return projection;
 }
 
 /* v ---------------------------------------------------------------------- v */
@@ -1103,13 +816,12 @@ public class ArgParser
 /* ^ ---------------------------------------------------------------------- ^ */
 /* ^ ArgParser API                                                          ^ */
 /* ^ ---------------------------------------------------------------------- ^ */
-
 /* v ---------------------------------------------------------------------- v */
 /* v Logging API                                                            v */
 /* v ---------------------------------------------------------------------- v */
 /// <summary>
 /// Logger class provides a simple logging interface with three log levels.
-/// It writes output to LCD panels tagged with "[LOG]" on the same grid,
+/// It writes output to LCD panels tagged with "[AC_LOG]" on the same grid,
 /// falls back to program.Echo if none are found (if enabled), and optionally logs
 /// to the programmable block's CustomData (keeping only the 100 most recent messages).
 /// This version caches each panel’s wrapped text so that if the panel’s font/size
@@ -1148,17 +860,17 @@ public class Logger
     }
 
     /// <summary>
-    /// Constructor – automatically finds LCD panels with "[LOG]" in their name on the same grid.
+    /// Constructor – automatically finds LCD panels with "[AC_LOG]" in their name on the same grid.
     /// Initializes the cache for each panel.
     /// </summary>
     public Logger(MyGridProgram program)
     {
         this.program = program;
 
-        // Find all IMyTextPanel blocks with "[LOG]" in the name.
+        // Find all IMyTextPanel blocks with "[AC_LOG]" in the name.
         lcdPanels = new List<IMyTextPanel>();
         List<IMyTextPanel> allPanels = new List<IMyTextPanel>();
-        program.GridTerminalSystem.GetBlocksOfType<IMyTextPanel>(allPanels, panel => panel.CustomName.Contains("[LOG]"));
+        program.GridTerminalSystem.GetBlocksOfType<IMyTextPanel>(allPanels, panel => panel.CustomName.Contains("[AC_LOG]"));
 
         // Filter out panels not on the same grid as the programmable block.
         foreach (var panel in allPanels)
