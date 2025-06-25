@@ -1,8 +1,12 @@
 private IMyShipController shipController;
+private IMyProgrammableBlock retroController;
 private List<IMyGyro> gyros = new List<IMyGyro>(); // H2 Retro Thrusters.
 private Vector3D gravVecW; // Gravity vector in World Frame [m/s^2].
 private double anglePitch = 0;
 private double angleRoll = 0;
+private double Kd; // Derivative gain.
+private double alpha = 0.1; // LPF Filter Parameter
+private Vector3D angularSpeedW_prev = new Vector3D(0,0,0); // Retaining angular velocity from previous iteration for use in LPF.
 private Vector3D alignmentVec = new Vector3D(0,0,0);
 
 // Constants
@@ -17,6 +21,25 @@ private StringBuilder sbLog = new StringBuilder(); // StringBuilder object to ho
 // Create an instance of ArgParser.
 private ArgParser argParser = new ArgParser();
 
+// Attitude Error structure to consolidate error terms for
+// processing in stabilization criteria check.
+private struct AttitudeError{
+   public double PitchError;
+   public double RollError;
+   public double PitchRateError;
+   public double RollRateError;
+
+   public bool IsZero(double epsilon){
+      return (PitchError     < epsilon &&
+              RollError      < epsilon &&
+              PitchRateError < epsilon &&
+              RollRateError  < epsilon);
+   }
+}
+
+private AttitudeError error = new AttitudeError();
+
+// Ctor
 public Program() {
 
    // Initialize the logger, enabling all output types.
@@ -29,10 +52,19 @@ public Program() {
    // Register command line arguments
    argParser.RegisterArg("run", typeof(bool), false, false); // Run the controller.
    argParser.RegisterArg("stop", typeof(bool), false, false); // Stop the controller.
+   argParser.RegisterArg("kd", typeof(double), false, false); // Derivative gain.
+   argParser.RegisterArg("alpha", typeof(double), false, false); // LPF Filter Parameter
+
+   // Check to see if config parameters in CustomData have changed
+   // and load them into ConfigFile instance if they have.
+   ConfigFile.CheckAndReparse(Me);
 
    // Register config parameters
    ConfigFile.RegisterProperty("Gyros", ConfigValueType.String, "Gyroscopes (AtmoProbe)");
    ConfigFile.RegisterProperty("ShipController", ConfigValueType.String, "RemoteControl (AtmoProbe)");
+   ConfigFile.RegisterProperty("RetroController", ConfigValueType.String, "ProgBlockFC (AtmoProbe)");
+   ConfigFile.RegisterProperty("Kd", ConfigValueType.Float, 0.1d);
+   ConfigFile.RegisterProperty("Alpha", ConfigValueType.Float, 0d);
 
    // Write Config to Custom Data if is empty.
    if(string.IsNullOrWhiteSpace(Me.CustomData)){
@@ -42,13 +74,19 @@ public Program() {
    // Load config parameters.
    ((IMyBlockGroup)GridTerminalSystem.GetBlockGroupWithName(ConfigFile.Get<string>("Gyros"))).GetBlocksOfType<IMyGyro>(gyros);
    shipController = (IMyRemoteControl)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("ShipController"));
+   retroController = (IMyProgrammableBlock)GridTerminalSystem.GetBlockWithName(ConfigFile.Get<string>("RetroController"));
+   Kd = ConfigFile.Get<double>("Kd");
+   alpha = ConfigFile.Get<double>("Alpha");
 
    // We only want to run continously after event controller detects presence of
    // natural gravity.
    Runtime.UpdateFrequency = STOP_RATE;
 }
-bool running = false;
 
+bool running = false; // Flag to track run state.
+bool orienting = false; // Flag to track run state.
+
+// Main
 public void Main(string args) {
 
     logger.Clear(); 
@@ -71,15 +109,23 @@ public void Main(string args) {
         switch (kvp.Key)
         {
             case "--run":
-                Runtime.UpdateFrequency = CHECK_RATE;
+                Runtime.UpdateFrequency = SAMPLE_RATE;
                 running = true;
+                orienting = true;
                 break;
             case "--stop":
                 ClearGyroOverrides();
                 Runtime.UpdateFrequency = STOP_RATE;
                 running = false;
+                orienting = true;
                 logger.Info("Running: " + running);
                 return;
+            case "--kd":
+                Kd = (double)kvp.Value;
+                break;
+            case "--alpha":
+                alpha = (double)kvp.Value;
+                break;
             default:
                 logger.Warning("Unknown argument: " + kvp.Key);
                 break;
@@ -87,16 +133,19 @@ public void Main(string args) {
     }
 
     // Some logging for sanity checks.
-    sbLog.AppendLine("Running: " + running);
+    sbLog.AppendLine("Running:   " + running);
+    sbLog.AppendLine("Orienting: " + orienting);
 
     sbLog.AppendLine("Show Horiz Indicator: " + shipController.ShowHorizonIndicator);
     sbLog.AppendLine("Roll Indicator: " + shipController.RollIndicator);
+    sbLog.AppendLine("Kd: " + Kd);
     sbLog.AppendLine("Gyro Override Status:");
 
     foreach(var gyro in gyros){
        sbLog.AppendLine("  " + gyro.CustomName + ": " + gyro.GyroOverride);
     }
 
+/*
     sbLog.AppendLine("\nGyro Overrides:");
 
     foreach(var gyro in gyros){
@@ -105,11 +154,13 @@ public void Main(string args) {
        sbLog.AppendLine("    Pitch: " + gyro.Pitch);
        sbLog.AppendLine("    Yaw: " + gyro.Yaw);
     }
+*/
 
-    logger.Info("\n" + sbLog.ToString());
+    //logger.Info("\n" + sbLog.ToString());
 
     // Make sure we are within planetary gravitational field!
-    gravVecW = shipController.GetNaturalGravity();
+    //gravVecW = shipController.GetNaturalGravity();
+    gravVecW = shipController.GetArtificialGravity();
     if(Math.Abs(gravVecW.Length()) < tolerance){
        logger.Clear(); 
        logger.Warning("CANNOT PERFORM STABILIZATION CALCULATIONS OUTSIDE OF GRAVITY WELL.");
@@ -134,17 +185,58 @@ public void Main(string args) {
     angleRoll = Math.Acos(MathHelper.Clamp(refMatrix.Left.Dot(planetRelativeLeftVec) / planetRelativeLeftVec.Length(), -1, 1));
     angleRoll *= Math.Sign(VectorProjection(refMatrix.Left, alignmentVec).Dot(alignmentVec)); //ccw is positive 
 
+    // Track the angular error.
+    error.PitchError = anglePitch;
+    error.RollError = angleRoll;
+
+    //---Angular Rate Controller.
+    // Fortunately, we have access to angular rate through the shipController!
+    // X is Pitch, Y is Yaw, Z is Roll.
+    Vector3D angularSpeedW = shipController.GetShipVelocities().AngularVelocity;
+    //Vector3D angularSpeedB = Vector3D.TransformNormal(angularSpeedW, MatrixD.Transpose(shipController.WorldMatrix));
+
+    sbLog.AppendLine("Ship Angular Velocity: ");
+    sbLog.AppendLine("   Pitch Rate: " + angularSpeedW.X + " [rad/s]");
+    sbLog.AppendLine("   Yaw Rate:   " + angularSpeedW.Y + " [rad/s]");
+    sbLog.AppendLine("   Roll Rate:  " + angularSpeedW.Y + " [rad/s]");
+
+    logger.Info("\n" + sbLog.ToString());
+
+    // Implementing a Exponential Moving Average (EMA) Low-Pass Filter (LPF)
+    // to smooth angular velocity and smooth out the noise (abrupt changes.)
+    double filteredRollSpeed = alpha*angularSpeedW.Z + (1-aplha)*angularSpeedW_prev.Z;
+    double filteredPitchSpeed = alpha*angularSpeedW.X + (1-aplha)*angularSpeedW_prev.X;
+    angularSpeedW_prev = angularSpeedW;
+
+    // Track the angular rate error.
+    error.PitchRateError = filteredPitchSpeed;
+    error.RollRateError = filteredRollSpeed;
+
+    // Include derivative term in control signal.
+    // Negating since we are "fighting" the corrective
+    // angular velocity.
+    angleRoll += -Kd*filteredRollSpeed;
+    anglePitch += -Kd*filteredPitchSpeed;
+
     anglePitch *= -1; 
     angleRoll *= -1;
 
-    double roll_deg = Math.Round(angleRoll / Math.PI * 180);
-    double pitch_deg = Math.Round(anglePitch / Math.PI * 180);
-
-    //---Angle controller    
+    //---Angle controller.
+    // We are essentially employing a Proportional controller (with Kp = 1)  to
+    // drive angular error to zero. The computed control signal will be
+    // an angular rate since that is what the Gyro override consists of.
     double rollSpeed = Math.Round(angleRoll, 2);
     double pitchSpeed = Math.Round(anglePitch, 2);
 
-    //---Enforce rotation speed limit
+    //---Enforce rotation speed limit. Gyro Override rates must be withing [-PI,PI] radians / second.
+    // Clever way to handle pitch and roll simultaneously. Basically combining 
+    // their inequalities. Viz.,
+    //
+    //  |rollSpeed| <= Math.PI    and     |pitchSpeed| <= Math.PI
+    //
+    // become:
+    //
+    //  |rollSpeed| + |pitchSpeed| <= Math.PI + Math.PI = 2 * Math.PI
     if(Math.Abs(rollSpeed) + Math.Abs(pitchSpeed) > 2 * Math.PI){
         double scale = 2 * Math.PI / (Math.Abs(rollSpeed) + Math.Abs(pitchSpeed));
         rollSpeed *= scale;
@@ -152,8 +244,26 @@ public void Main(string args) {
     }
 
     ApplyGyroOverride(pitchSpeed, 0, -rollSpeed, gyros, shipController);
-}
 
+    // TODO: Reduce UpdateFrequency after attitude is stabilized.
+    // TODO: Initiate Retro Burn calculations after attitude is stabilized.
+    // TODO: Prosecute LZ Alignment Guidance after attitude is stabilized.
+
+    // We are stable and oriented so reduce
+    // frequency of checks.
+    if(error.IsZero(tolerance)){
+       Runtime.UpdateFrequency = CHECK_RATE;
+       orienting = false;
+       retroController.TryRun("--run true");
+    // Orientation and stabilization are still
+    // necessary or are necessary once again so
+    // increase frequency of checks and corrections.
+    }else{
+       Runtime.UpdateFrequency = SAMPLE_RATE;
+       orienting = true;
+    }
+
+}
 
 // Turn off gyro overrides.
 private void ClearGyroOverrides(){
@@ -519,9 +629,8 @@ public static class ConfigFile
     /// Checks if the CustomData has changed and reparses it if necessary.
     /// </summary>
     /// <param name="pb">The programmable block.</param>
-    /// <param name="program">The grid program instance.</param>
     /// <returns>True if successful, false otherwise.</returns>
-    public static bool CheckAndReparse(IMyProgrammableBlock pb, MyGridProgram program)
+    public static bool CheckAndReparse(IMyProgrammableBlock pb)
     {
         if (configText != pb.CustomData)
         {
